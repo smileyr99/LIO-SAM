@@ -1,8 +1,10 @@
 #include "utility.hpp"
 #include "lio_sam/msg/cloud_info.hpp"
 
-//// point cloud 구조 정의
+
+
 /**
+ * point cloud 구조 정의
  * Velodyne point cloud 구조체, 변수, 이름 XYZIRT는 각 변수의 첫글자 입니다.
 */
 struct VelodynePointXYZIRT
@@ -20,7 +22,7 @@ POINT_CLOUD_REGISTER_POINT_STRUCT (VelodynePointXYZIRT,
 )
 
 /**
- * ouster point cloud 구조체, 변수, 이름 XYZIRT는 각 변수의 첫글자 입니다.
+ * ouster point cloud 구조체, 변수, 이름 XYZIRT는 각 변수의 첫글자 입니다. 
 */
 struct OusterPointXYZIRT {
     PCL_ADD_POINT4D;        // 위치

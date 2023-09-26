@@ -166,16 +166,27 @@ public:
         }
     }
 
+    /**
+     * 가려진 포인트 및 평행 빔 포인트를 표시하고, 특징 추출을 수행하지 않습니다. 
+    */
     void markOccludedPoints()
     {
         int cloudSize = extractedCloud->points.size();
         // mark occluded points and parallel beam points
+        // 가려진 포인트 및 평행 빔 포인트를 표시
         for (int i = 5; i < cloudSize - 6; ++i)
         {
             // occluded points
+            // 현재 포인트와 다음 포인트의 거리 값
             float depth1 = cloudInfo.point_range[i];
             float depth2 = cloudInfo.point_range[i+1];
+            
+            // 두 라이다 포인트 간의 일차원 인덱스 차이, 같은 스캔 라인에 있으면 1 입니다. (두 포인트 간에 무효한 포인트가 몇개 제거되면 1보다 크게 될 수 있지만 크게 중요하지 않습니다.)
+            // 이전 포인트가 스캔 한 주기 끝에 있고 다음 포인트가 다른 스캔 라인의 시작에 위치하는 경우 값이 크게 될 수 있습니다. -> 서로 다른 스캔라인의 차이일때
             int columnDiff = std::abs(int(cloudInfo.point_col_ind[i+1] - cloudInfo.point_col_ind[i]));
+
+            // 두 포인트가 같은 스캔라인에 있고 거리가 0.3보다 큰 경우, 가려진 관계가 있음을 의미합니다.( 두 포인트가 같은 평면에 있지 않으면 거리가 크게 차이나지 않습니다.)
+            // 먼 거리의 포인트가 가려지고 해당 포인트 및 인접한 5개 포인트를 표시하고 이후에는 특징 추출을 수행하지 않습니다.
             if (columnDiff < 10){
                 // 10 pixel diff in range image
                 if (depth1 - depth2 > 0.3){
@@ -195,14 +206,23 @@ public:
                 }
             }
             // parallel beam
+            // 현재 포인트가 라이다 빔 방향과 평행한지 여부를 판단하기 위해 이전 포인트와 다음 포인트를 사용합니다.
             float diff1 = std::abs(float(cloudInfo.point_range[i-1] - cloudInfo.point_range[i]));
             float diff2 = std::abs(float(cloudInfo.point_range[i+1] - cloudInfo.point_range[i]));
 
+            // 평행하면 표시합니다.--> 
             if (diff1 > 0.02 * cloudInfo.point_range[i] && diff2 > 0.02 * cloudInfo.point_range[i])
                 cloudNeighborPicked[i] = 1;
         }
     }
 
+
+    /**
+     * 포인트 클라우드에서 각 스캔 라인에 대해 모서리 및 평면 특징을 추출합니다.
+     * 1. 각 스캔 라인에 대해 스캔 라인 내에서 균등하게 20개의 모서리 및 임의의 수의 평면 포인트를 추출합니다.
+     * 2. 모서리가 아닌 포인트로 간주되는 경우 이를 평면 포인트로 간주하고 평면 포인트 클라우드에 추가합니다.
+     *      추출된 포인트는 최종적으로 다운 샘플링됩니다.
+    */
     void extractFeatures()
     {
         cornerCloud->clear();
@@ -211,43 +231,54 @@ public:
         pcl::PointCloud<PointType>::Ptr surfaceCloudScan(new pcl::PointCloud<PointType>());
         pcl::PointCloud<PointType>::Ptr surfaceCloudScanDS(new pcl::PointCloud<PointType>());
 
+        // 각 스캔 라인에 대한 루프
         for (int i = 0; i < N_SCAN; i++)
         {
             surfaceCloudScan->clear();
 
+            // 스캔 라인 내에서 포인트 클라우드 데이터를 6개의 세그먼트로 분할하고, 각 세그먼트에서 일정 수의 특징을 추출합니다.
             for (int j = 0; j < 6; j++)
             {
-
+                // 각 세그먼트의 포인트 시작 및 끝 인덱스
                 int sp = (cloudInfo.start_ring_index[i] * (6 - j) + cloudInfo.end_ring_index[i] * j) / 6;
                 int ep = (cloudInfo.start_ring_index[i] * (5 - j) + cloudInfo.end_ring_index[i] * (j + 1)) / 6 - 1;
 
                 if (sp >= ep)
                     continue;
 
+                // 포인트를 곡률 기준으로 오름차순으로 정렬
                 std::sort(cloudSmoothness.begin()+sp, cloudSmoothness.begin()+ep, by_value());
 
+                // 곡률을 기준으로 내림차순으로 포인트를 반복합니다.
                 int largestPickedNum = 0;
                 for (int k = ep; k >= sp; k--)
                 {
+                    // 포인트 인덱스
                     int ind = cloudSmoothness[k].ind;
+                    // 현재 포인트가 처리되지 않았고, 곡률이 edgeThreshold 보다 크면 코너로 간주합니다.
                     if (cloudNeighborPicked[ind] == 0 && cloudCurvature[ind] > edgeThreshold)
                     {
+                        // 각 세그먼트에서 최대 20개의 코너를 추출합니다.
                         largestPickedNum++;
                         if (largestPickedNum <= 20){
+                            // 코너로 표시합니다.
                             cloudLabel[ind] = 1;
+                            // 코너 포인트 클라우드에 추가합니다.
                             cornerCloud->push_back(extractedCloud->points[ind]);
                         } else {
                             break;
                         }
-
+                        // 처리 완료를 표시합니다.
                         cloudNeighborPicked[ind] = 1;
+                        // 동일한 스캔 라인에서 뒤에 있는 5개의 포인트를 처리하지 않도록 표시하여 특징이 모이는 것을 방지합니다.
                         for (int l = 1; l <= 5; l++)
-                        {
+                        {   
                             int columnDiff = std::abs(int(cloudInfo.point_col_ind[ind + l] - cloudInfo.point_col_ind[ind + l - 1]));
                             if (columnDiff > 10)
                                 break;
                             cloudNeighborPicked[ind + l] = 1;
                         }
+                        // 동일한 스캔 라인에서 앞에 있는 5개의 포인트를 처리하지 않도록 표시하여 특징이 모이는 것을 방지합니다.
                         for (int l = -1; l >= -5; l--)
                         {
                             int columnDiff = std::abs(int(cloudInfo.point_col_ind[ind + l] - cloudInfo.point_col_ind[ind + l + 1]));
@@ -258,15 +289,20 @@ public:
                     }
                 }
 
+                // 곡률 기준으로 오름차순으로 포인트를 반복합니다.
                 for (int k = sp; k <= ep; k++)
                 {
+                    // 포인트 인덱스
                     int ind = cloudSmoothness[k].ind;
+                    // 현재 포인트가 처리되지 않았고, 곡률이 surfTheshold보다 작으면 평면 포인트로 간주합니다.
                     if (cloudNeighborPicked[ind] == 0 && cloudCurvature[ind] < surfThreshold)
                     {
-
+                        // 평면 포인트로 표시합니다.
                         cloudLabel[ind] = -1;
+                        // 처리 완료를 표시합니다.
                         cloudNeighborPicked[ind] = 1;
 
+                        // 동일한 스캔 라인에서 뒤에 있는 5개의 포인트를 처리하지 않도록 표시하여 특징이 모이는 것을 방지합니다.
                         for (int l = 1; l <= 5; l++) {
                             int columnDiff = std::abs(int(cloudInfo.point_col_ind[ind + l] - cloudInfo.point_col_ind[ind + l - 1]));
                             if (columnDiff > 10)
@@ -274,6 +310,7 @@ public:
 
                             cloudNeighborPicked[ind + l] = 1;
                         }
+                        // 동일한 스캔 라인에서 앞에 있는 5개의 포인트를 처리하지 않도록 표시하여 특징이 모이는 것을 방지합니다.
                         for (int l = -1; l >= -5; l--) {
                             int columnDiff = std::abs(int(cloudInfo.point_col_ind[ind + l] - cloudInfo.point_col_ind[ind + l + 1]));
                             if (columnDiff > 10)
@@ -284,6 +321,7 @@ public:
                     }
                 }
 
+                // 평면 포인트와 처리되지 않은 포인트는 모두 평면 포인트로 간주하고 평면 포인트 클라우드 스캔에 추가합니다.
                 for (int k = sp; k <= ep; k++)
                 {
                     if (cloudLabel[k] <= 0){
@@ -292,14 +330,19 @@ public:
                 }
             }
 
+            // 평면 포인트 클라우드 다운 샘플링
             surfaceCloudScanDS->clear();
             downSizeFilter.setInputCloud(surfaceCloudScan);
             downSizeFilter.filter(*surfaceCloudScanDS);
 
+            // 평면 포인트 클라우드에 추가
             *surfaceCloud += *surfaceCloudScanDS;
         }
     }
 
+    /**
+     * 메모리 정리 
+    */
     void freeCloudInfoMemory()
     {
         cloudInfo.start_ring_index.clear();
@@ -308,14 +351,20 @@ public:
         cloudInfo.point_range.clear();
     }
 
+    /**
+    * 코너 및 평면 포인트 클라우드를 게시하고, 특징 포인트가 있는 현재 라이다 프레임 포인트 클라우드 정보를 게시합니다.
+    */
     void publishFeatureCloud()
     {
         // free cloud info memory
+        // 메모리 정리
         freeCloudInfoMemory();
         // save newly extracted features
+        // 코너 및 평면 포인트 클라우드를 publish하여 rviz에 표시합니다.
         cloudInfo.cloud_corner = publishCloud(pubCornerPoints,  cornerCloud,  cloudHeader.stamp, lidarFrame);
         cloudInfo.cloud_surface = publishCloud(pubSurfacePoints, surfaceCloud, cloudHeader.stamp, lidarFrame);
         // publish to mapOptimization
+        // 코너와 평면 포인트 클라우드 데이터가 추가된 현재 라이다 프레임 포인트 클라우드 정보를 publish하여 mapOptimization에 전달합니다.
         pubLaserCloudInfo->publish(cloudInfo);
     }
 };
