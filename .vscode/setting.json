@@ -1,0 +1,13 @@
+{
+    "ros.distro": "foxy",
+    "colcon.provideTasks": true,
+    "files.associations": {
+      "functional": "cpp",
+      "*.repos": "yaml",
+      "*.world": "xml",
+      "*.xacro": "xml"
+    },
+
+    "cmake.configureOnOpen": false
+
+  }
