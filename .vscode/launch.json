@@ -2,6 +2,13 @@
     "version": "0.2.0",
     "configurations": [
         {
+            "name": "ROS: Launch",
+            "request": "launch",
+            "target": "/home/jackal/lio_sam/src/LIO-SAM/launch/run.launch.py",
+            "launch": ["rviz2"],
+            "type": "ros",
+        },
+        {
             "name": "Debug-rclpy(debugpy)",
             "type": "python",
             "request": "launch",

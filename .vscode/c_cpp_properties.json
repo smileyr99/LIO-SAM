@@ -7,9 +7,8 @@
             },
             "includePath": [
                 "${default}",
-                "${workspaceFolder}/**",
+                "${workspaceFolder}/../**",
                 "/opt/ros/foxy/include/**",
-                "/home/jackal/LIO-SAM/include/**",
                 "/usr/include/opencv4"
             ],
             "name": "Linux",
