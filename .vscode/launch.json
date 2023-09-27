@@ -1,52 +1,14 @@
 {
     "version": "0.2.0",
     "configurations": [
+  
         {
-            "name": "ROS: Launch",
+            "name": "lio_sam",
+            "type": "ros",
             "request": "launch",
             "target": "/home/jackal/lio_sam/src/LIO-SAM/launch/run.launch.py",
-            "launch": ["rviz2"],
-            "type": "ros",
-        },
-        {
-            "name": "Debug-rclpy(debugpy)",
-            "type": "python",
-            "request": "launch",
-            "program": "${file}",
-            "console": "integratedTerminal"
-        },
-        {
-            "name": "Debug-rclcpp(gbd)",
-            "type": "cppdbg",
-            "request": "launch",
-            "program": "${workspaceFolder}/install/${input:package}/lib/${input:package}/${input:node}",
-            "args": [],
-            "preLaunchTask": "colcon: build",
-            "stopAtEntry": true,
-            "cwd": "${workspaceFolder}",
-            "externalConsole": false,
-            "MIMode": "gdb",
-            "setupCommands": [
-                {
-                    "description": "Enable pretty-printing for gdb",
-                    "text": "-enable-pretty-printing",
-                    "ignoreFailures": true
-                }
-            ]
+  
         }
-    ],
-    "inputs": [
-        {
-            "id": "package",
-            "type": "promptString",
-            "description": "package name",
-            "default": "topic_service_action_rclcpp_example"
-        },
-        {
-            "id": "node",
-            "type": "promptString",
-            "description": "node name",
-            "default": "argument"
-        }
-    ]
-}
+      ]
+  }
+  
