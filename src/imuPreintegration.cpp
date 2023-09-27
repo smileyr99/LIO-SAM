@@ -366,7 +366,7 @@ public:
      * 1. 매 100 프레임 라이다 오도메트리마다 ISAM2 최적화를 재설정하고 오도메트리, 속도, bias pre factor를 추가하고 최적화를 수행
      * 2. 이전 라이다 오도메트리와 현재 라이다 오도메트리 간의 IMU preintegration을 계산하고 이전 상태에 integraion 값을 적용하여 현재 프레임의 초기 상태를 추정
      *      mapOptimization에서 가져온 현재 프레임 포즈를 추가하고 그래프 최적화를 수행하여 현재 프레임의 상태를 업데이트
-     * 3. 최적화 후 reprojection을 수행. 최적화는 IMU bias를 업데이트하며, 최신 bias로 현재 라이다 오도메트리 타임 스탬프 이후의 IMU preintegraion을 다시 계산하며 이 값은 각 타임 스탬프의 pose 계산에 적용
+     * 3. 최적화 후 re-Propagate 수행. 최적화는 IMU bias를 업데이트하며, 최신 bias로 현재 라이다 오도메트리 타임 스탬프 이후의 IMU preintegraion을 다시 계산하며 이 값은 각 타임 스탬프의 pose 계산에 적용
     */
     void odometryHandler(const nav_msgs::msg::Odometry::SharedPtr odomMsg)
     {
@@ -558,7 +558,7 @@ public:
 
 
         // 2. after optiization, re-propagate imu odometry preintegration
-        // 2. 최적화 이후, reProjection을 수행, 최적화는 IMU bias를 업데이트하며, 최신 bias를 사용하여 현재 라이다 오도메트리 시점 이후 IMU preintegration을 다시 계산하고, 이 값은 각 시점의 포즈 계산에 사용
+        // 2. 최적화 이후,  re-propagate 수행, 최적화는 IMU bias를 업데이트하며, 최신 bias를 사용하여 현재 라이다 오도메트리 시점 이후 IMU preintegration을 다시 계산하고, 이 값은 각 시점의 포즈 계산에 사용
         prevStateOdom = prevState_;
         prevBiasOdom  = prevBias_;
         // first pop imu message older than current correction data

@@ -206,30 +206,43 @@ public:
 
     std::unique_ptr<tf2_ros::TransformBroadcaster> br;
 
+    /**
+     * 생성자
+    */
     mapOptimization(const rclcpp::NodeOptions & options) : ParamServer("lio_sam_mapOptimization", options)
     {
+        // ISM2 매개변수 설정
         ISAM2Params parameters;
         parameters.relinearizeThreshold = 0.1;
         parameters.relinearizeSkip = 1;
         isam = new ISAM2(parameters);
 
+        // 과거 키프레임의 위치 정보를 게시
         pubKeyPoses = create_publisher<sensor_msgs::msg::PointCloud2>("lio_sam/mapping/trajectory", 1);
+        // 전역 맵의 특징 포인트 클라우드를 게시
         pubLaserCloudSurround = create_publisher<sensor_msgs::msg::PointCloud2>("lio_sam/mapping/map_global", 1);
+        // 라이다 오도메트리를 게시하며, rviz에서 좌표축으로 표시
         pubLaserOdometryGlobal = create_publisher<nav_msgs::msg::Odometry>("lio_sam/mapping/odometry", qos);
+         // 레이저 오도메트리를 게시하며, 상단의 라이다 오도메트리와 유사하지만 roll 및 pitch는 IMU 데이터를 가중치 평균하고 z는 제한이 적용
         pubLaserOdometryIncremental = create_publisher<nav_msgs::msg::Odometry>(
             "lio_sam/mapping/odometry_incremental", qos);
+        // 레이저 오도메트리 경로를 게시하며, rviz에서 이동 경로로 표시
         pubPath = create_publisher<nav_msgs::msg::Path>("lio_sam/mapping/path", 1);
         br = std::make_unique<tf2_ros::TransformBroadcaster>(this);
 
+        // 현재 레이저 프레임의 포인트 클라우드 정보를 구독합니다. (FeatureExtraction으로부터)
         subCloud = create_subscription<lio_sam::msg::CloudInfo>(
             "lio_sam/feature/cloud_info", qos,
             std::bind(&mapOptimization::laserCloudInfoHandler, this, std::placeholders::_1));
+        // GPS 오도메트리를 구독
         subGPS = create_subscription<nav_msgs::msg::Odometry>(
             gpsTopic, 200,
             std::bind(&mapOptimization::gpsHandler, this, std::placeholders::_1));
+        // 외부 루프 검출 프로그램에서 제공하는 루프 데이터를 구독 (이 코드에서는 사용되지 않음)
         subLoop = create_subscription<std_msgs::msg::Float64MultiArray>(
             "lio_loop/loop_closure_detection", qos,
             std::bind(&mapOptimization::loopInfoHandler, this, std::placeholders::_1));
+
 
         auto saveMapService = [this](const std::shared_ptr<rmw_request_id_t> request_header, const std::shared_ptr<lio_sam::srv::SaveMap::Request> req, std::shared_ptr<lio_sam::srv::SaveMap::Response> res) -> void {
             (void)request_header;
@@ -289,19 +302,27 @@ public:
             cout << "Saving map to pcd files completed\n" << endl;
             return;
         };
-        
+
+        // 지도 저장 서비스를 게시
         srvSaveMap = create_service<lio_sam::srv::SaveMap>("lio_sam/save_map", saveMapService);
+        // 클라우드의 포인트를 지도에 할당하기 위한 변환
         pubHistoryKeyFrames = create_publisher<sensor_msgs::msg::PointCloud2>("lio_sam/mapping/icp_loop_closure_history_cloud", 1);
+        // 루프 클로저를 적용한 후 현재 키프레임의 포인트 클라우드를 게시
         pubIcpKeyFrames = create_publisher<sensor_msgs::msg::PointCloud2>("lio_sam/mapping/icp_loop_closure_history_cloud", 1);
+        // 루프 제약 조건을 게시하며, rviz에서 루프 프레임 간의 연결선으로 표시
         pubLoopConstraintEdge = create_publisher<visualization_msgs::msg::MarkerArray>("/lio_sam/mapping/loop_closure_constraints", 1);
 
+        // 지역 맵의 다운샘플링된 평면 포인트 클라우드를 게시
         pubRecentKeyFrames = create_publisher<sensor_msgs::msg::PointCloud2>("lio_sam/mapping/map_local", 1);
+        // 과거 프레임(누적)의 코너 및 서피스 포인트의 다운샘플링된 클라우드를 게시
         pubRecentKeyFrame = create_publisher<sensor_msgs::msg::PointCloud2>("lio_sam/mapping/cloud_registered", 1);
+        // 현재 프레임의 원본 포인트 클라우드를 등록한 후 게시
         pubCloudRegisteredRaw = create_publisher<sensor_msgs::msg::PointCloud2>("lio_sam/mapping/cloud_registered_raw", 1);
 
         downSizeFilterCorner.setLeafSize(mappingCornerLeafSize, mappingCornerLeafSize, mappingCornerLeafSize);
         downSizeFilterSurf.setLeafSize(mappingSurfLeafSize, mappingSurfLeafSize, mappingSurfLeafSize);
         downSizeFilterICP.setLeafSize(mappingSurfLeafSize, mappingSurfLeafSize, mappingSurfLeafSize);
+        // scan-to-map 최적화에 필요한 주변 키프레임을 위한 다운샘플링 필터
         downSizeFilterSurroundingKeyPoses.setLeafSize(surroundingKeyframeDensity, surroundingKeyframeDensity, surroundingKeyframeDensity); // for surrounding key poses of scan-to-map optimization
 
         allocateMemory();
