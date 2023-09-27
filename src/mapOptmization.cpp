@@ -23,9 +23,38 @@ using symbol_shorthand::V; // Vel   (xdot,ydot,zdot)
 using symbol_shorthand::B; // Bias  (ax,ay,az,gx,gy,gz)
 using symbol_shorthand::G; // GPS pose
 
-/*
-    * A point cloud type that has 6D pose info ([x,y,z,roll,pitch,yaw] intensity is time stamp)
-    */
+/**
+ * MapOptimization의 주요 기능
+ * 1. scan-to-map matching: 현재 라이다 프레임의 특징 포인트(코너, 평면) 및 local keyframe map의 특징 포인트를 추출하여 scan-to-map 반복 최적화를 수행하고 현재 프레임의 포즈를 업데이트
+ * 2. keyframe factor 그래프 최적화: keyframe을 factor 그래프에 추가하고 라이다 오도메트리 factor, GPS factor, loop closer factor를 추가하여 factor 그래프 최적화를 수행하고 모든 keyframe의 pose를 업데이트
+ * 3. Loop-closer-detection: keyframe 중에서 거리가 가깝고 시간이 지난 프레임을 찾아서 일치하는 프레임으로 설정하고 일치 프레임 주변에서 로컬 keyframe 맵을 추출하여 scan-to-map 매칭을 수행하고 포즈 변환을 언어서 루프 클로저 factor 데이터를 구성하고 factor 그래프 최적화에 추가
+*/
+
+/**
+ * 구독:
+ * 1. 현재 레이저 프레임 포인트 클라우드 정보를 구독합니다. 이 정보는 FeatureExtraction에서 제공됩니다.
+ * 2. GPS 오도메트리를 구독합니다.
+ * 3. 외부 루프 클로저 감지 프로그램에서 제공하는 루프 데이터를 구독합니다. 이 프로그램에서는 사용되지 않습니다.
+ * 
+ * 발행:
+ * 1. 과거 키프레임 오도메트리를 발행합니다.
+ * 2. 로컬 키프레임 맵의 특징 포인트 클라우드를 발행합니다.
+ * 3. 레이저 오도메트리를 발행하며, RViz에서는 좌표축으로 시각화됩니다.
+ * 4. 레이저 오도메트리를 발행합니다.
+ * 5. 레이저 오도메트리 경로를 발행하며, RViz에서는 이동 경로로 시각화됩니다.
+ * 6. 지도 저장 서비스를 발행합니다.
+ * 7. 루프 클로저 매치 키프레임의 로컬 맵을 발행합니다.
+ * 8. 현재 키프레임을 루프 클로저 최적화 후의 포즈 변환을 적용한 특징 포인트 클라우드로 발행합니다.
+ * 9. 루프 클로저 엣지를 발행하며, RViz에서는 루프 프레임 간의 선으로 시각화됩니다.
+ * 10. 로컬 맵의 다운샘플 평면 포인트 집합을 발행합니다.
+ * 11. 이전 프레임 (누적) 코너 및 평면 포인트 다운샘플 집합을 발행합니다.
+ * 12. 현재 프레임 원시 포인트 클라우드를 등록 후 발행합니다.
+*/
+
+
+/**
+* A point cloud type that has 6D pose info ([x,y,z,roll,pitch,yaw] intensity is time stamp)
+*/
 struct PointXYZIRPYT
 {
     PCL_ADD_POINT4D
@@ -77,48 +106,67 @@ public:
     rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr subGPS;
     rclcpp::Subscription<std_msgs::msg::Float64MultiArray>::SharedPtr subLoop;
 
+    // GPS 데이터 큐
     std::deque<nav_msgs::msg::Odometry> gpsQueue;
+    // 클라우드 정보
     lio_sam::msg::CloudInfo cloudInfo;
 
+    // 과거 모든 키프레임의 코너 포인트 클라우드(다운샘플링)
     vector<pcl::PointCloud<PointType>::Ptr> cornerCloudKeyFrames;
+    // 과저 모든 키프레임의 평면 포인트 클라우드(다운샘플링)
     vector<pcl::PointCloud<PointType>::Ptr> surfCloudKeyFrames;
     
+    // 과거 키프레임의 위치 정보 포인트 클라우드
     pcl::PointCloud<PointType>::Ptr cloudKeyPoses3D;
+    // 과거 키프레임의 위치 및 자세 정보 포인트 클라우드
     pcl::PointCloud<PointTypePose>::Ptr cloudKeyPoses6D;
     pcl::PointCloud<PointType>::Ptr copy_cloudKeyPoses3D;
     pcl::PointCloud<PointTypePose>::Ptr copy_cloudKeyPoses6D;
 
+    // 현재 라이다 프레임 코너 포인트 클라우드
     pcl::PointCloud<PointType>::Ptr laserCloudCornerLast; // corner feature set from odoOptimization
+    // 현재 라이다 프레임 평면 포인트 클라우드
     pcl::PointCloud<PointType>::Ptr laserCloudSurfLast; // surf feature set from odoOptimization
+    // 현재 라이다 프레임 코너 포인트 클라우드 (다운샘플링)
     pcl::PointCloud<PointType>::Ptr laserCloudCornerLastDS; // downsampled corner feature set from odoOptimization
+    // 현재 라이다 프레임 평면 포인트 클라우드 (다운샘플링)
     pcl::PointCloud<PointType>::Ptr laserCloudSurfLastDS; // downsampled surf feature set from odoOptimization
 
+    // 현재 프레임에서 로컬 맵 매칭에 성공한 코너 및 평면 포인트가 결합된 클라우드
     pcl::PointCloud<PointType>::Ptr laserCloudOri;
     pcl::PointCloud<PointType>::Ptr coeffSel;
 
-    std::vector<PointType> laserCloudOriCornerVec; // corner point holder for parallel computation
+    // 현재 프레임에서 로컬 맵 매칭에 성공한 코너 포인트와 그에 해당하는 계수
+    std::vector<PointType> laserCloudOriCornerVec; // corner point holder for parallel computation 
     std::vector<PointType> coeffSelCornerVec;
     std::vector<bool> laserCloudOriCornerFlag;
+    // 현재 프레임에서 지역 맵 매칭에 성공한 평면 포인트와 그에 해당하는 계수
     std::vector<PointType> laserCloudOriSurfVec; // surf point holder for parallel computation
     std::vector<PointType> coeffSelSurfVec;
     std::vector<bool> laserCloudOriSurfFlag;
 
     map<int, pair<pcl::PointCloud<PointType>, pcl::PointCloud<PointType>>> laserCloudMapContainer;
+    // 지역 맵의 코너 포인트 클라우드
     pcl::PointCloud<PointType>::Ptr laserCloudCornerFromMap;
+    // 지역 맵의 서피스 포인트 클라우드
     pcl::PointCloud<PointType>::Ptr laserCloudSurfFromMap;
+    // 지역 맵의 코너 포인트 클라우드 (다운샘플링)
     pcl::PointCloud<PointType>::Ptr laserCloudCornerFromMapDS;
+    // 지역 맵의 서피스 포인트 클라우드 (다운샘플링)
     pcl::PointCloud<PointType>::Ptr laserCloudSurfFromMapDS;
 
+    // 로컬 맵 키프레임에 의해 구축된 맵 포인트 클라우드, 스캔 투 맵 최적화에서 인접 포인트를 찾기 위한 kdtree와 대응
     pcl::KdTreeFLANN<PointType>::Ptr kdtreeCornerFromMap;
     pcl::KdTreeFLANN<PointType>::Ptr kdtreeSurfFromMap;
 
     pcl::KdTreeFLANN<PointType>::Ptr kdtreeSurroundingKeyPoses;
     pcl::KdTreeFLANN<PointType>::Ptr kdtreeHistoryKeyPoses;
 
+    // 다운샘플링 필터
     pcl::VoxelGrid<PointType> downSizeFilterCorner;
     pcl::VoxelGrid<PointType> downSizeFilterSurf;
     pcl::VoxelGrid<PointType> downSizeFilterICP;
-    pcl::VoxelGrid<PointType> downSizeFilterSurroundingKeyPoses; // for surrounding key poses of scan-to-map optimization
+    pcl::VoxelGrid<PointType> downSizeFilterSurroundingKeyPoses; // for surrounding key poses of scan-to-map optimization - scan-to-map 최적화에 필요한 주변 키프레임을 위한 다운샘플링 필터
 
     rclcpp::Time timeLaserInfoStamp;
     double timeLaserInfoCur;
@@ -131,13 +179,17 @@ public:
     bool isDegenerate = false;
     Eigen::Matrix<float, 6, 6> matP;
 
+    // 로컬 맵의 코너 포인트 수
     int laserCloudCornerFromMapDSNum = 0;
+    // 로컬 맵의 서피스 포인트 수
     int laserCloudSurfFromMapDSNum = 0;
+    // 현재 레이저 프레임의 코너 포인트 수
     int laserCloudCornerLastDSNum = 0;
+    // 현재 레이저 프레임의 서피스 포인트 수
     int laserCloudSurfLastDSNum = 0;
 
     bool aLoopIsClosed = false;
-    map<int, int> loopIndexContainer; // from new to old
+    map<int, int> loopIndexContainer; // from new to old - 새로운 것에서 이전으로
     vector<pair<int, int>> loopIndexQueue;
     vector<gtsam::Pose3> loopPoseQueue;
     vector<gtsam::noiseModel::Diagonal::shared_ptr> loopNoiseQueue;
@@ -145,8 +197,11 @@ public:
 
     nav_msgs::msg::Path globalPath;
 
+    // 현재 프레임 포인트를 지도에 매핑하기 위한 변환
     Eigen::Affine3f transPointAssociateToMap;
+    // 이전 프레임의 오도메트리 적용 변환
     Eigen::Affine3f incrementalOdometryAffineFront;
+    // 현재 프레임의 오도메트리 적용 변환
     Eigen::Affine3f incrementalOdometryAffineBack;
 
     std::unique_ptr<tf2_ros::TransformBroadcaster> br;
