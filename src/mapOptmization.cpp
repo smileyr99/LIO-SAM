@@ -32,16 +32,16 @@ using symbol_shorthand::G; // GPS pose
 
 /**
  * 구독:
- * 1. 현재 레이저 프레임 포인트 클라우드 정보를 구독합니다. 이 정보는 FeatureExtraction에서 제공됩니다.
+ * 1. 현재 라이다 프레임 포인트 클라우드 정보를 구독합니다. 이 정보는 FeatureExtraction에서 제공됩니다.
  * 2. GPS 오도메트리를 구독합니다.
  * 3. 외부 루프 클로저 감지 프로그램에서 제공하는 루프 데이터를 구독합니다. 이 프로그램에서는 사용되지 않습니다.
  * 
  * 발행:
  * 1. 과거 키프레임 오도메트리를 발행합니다.
  * 2. 로컬 키프레임 맵의 특징 포인트 클라우드를 발행합니다.
- * 3. 레이저 오도메트리를 발행하며, RViz에서는 좌표축으로 시각화됩니다.
- * 4. 레이저 오도메트리를 발행합니다.
- * 5. 레이저 오도메트리 경로를 발행하며, RViz에서는 이동 경로로 시각화됩니다.
+ * 3. 라이다 오도메트리를 발행하며, RViz에서는 좌표축으로 시각화됩니다.
+ * 4. 라이다 오도메트리를 발행합니다.
+ * 5. 라이다 오도메트리 경로를 발행하며, RViz에서는 이동 경로로 시각화됩니다.
  * 6. 지도 저장 서비스를 발행합니다.
  * 7. 루프 클로저 매치 키프레임의 로컬 맵을 발행합니다.
  * 8. 현재 키프레임을 루프 클로저 최적화 후의 포즈 변환을 적용한 특징 포인트 클라우드로 발행합니다.
@@ -183,9 +183,9 @@ public:
     int laserCloudCornerFromMapDSNum = 0;
     // 로컬 맵의 서피스 포인트 수
     int laserCloudSurfFromMapDSNum = 0;
-    // 현재 레이저 프레임의 코너 포인트 수
+    // 현재 라이다 프레임의 코너 포인트 수
     int laserCloudCornerLastDSNum = 0;
-    // 현재 레이저 프레임의 서피스 포인트 수
+    // 현재 라이다 프레임의 서피스 포인트 수
     int laserCloudSurfLastDSNum = 0;
 
     bool aLoopIsClosed = false;
@@ -223,14 +223,14 @@ public:
         pubLaserCloudSurround = create_publisher<sensor_msgs::msg::PointCloud2>("lio_sam/mapping/map_global", 1);
         // 라이다 오도메트리를 게시하며, rviz에서 좌표축으로 표시
         pubLaserOdometryGlobal = create_publisher<nav_msgs::msg::Odometry>("lio_sam/mapping/odometry", qos);
-         // 레이저 오도메트리를 게시하며, 상단의 라이다 오도메트리와 유사하지만 roll 및 pitch는 IMU 데이터를 가중치 평균하고 z는 제한이 적용
+         // 라이다 오도메트리를 게시하며, 상단의 라이다 오도메트리와 유사하지만 roll 및 pitch는 IMU 데이터를 가중치 평균하고 z는 제한이 적용
         pubLaserOdometryIncremental = create_publisher<nav_msgs::msg::Odometry>(
             "lio_sam/mapping/odometry_incremental", qos);
-        // 레이저 오도메트리 경로를 게시하며, rviz에서 이동 경로로 표시
+        // 라이다 오도메트리 경로를 게시하며, rviz에서 이동 경로로 표시
         pubPath = create_publisher<nav_msgs::msg::Path>("lio_sam/mapping/path", 1);
         br = std::make_unique<tf2_ros::TransformBroadcaster>(this);
 
-        // 현재 레이저 프레임의 포인트 클라우드 정보를 구독합니다. (FeatureExtraction으로부터)
+        // 현재 라이다 프레임의 포인트 클라우드 정보를 구독합니다. (FeatureExtraction으로부터)
         subCloud = create_subscription<lio_sam::msg::CloudInfo>(
             "lio_sam/feature/cloud_info", qos,
             std::bind(&mapOptimization::laserCloudInfoHandler, this, std::placeholders::_1));
@@ -371,38 +371,79 @@ public:
         matP.setZero();
     }
 
+    /**
+     * 현재 라이다 정보를 처리합니다. 이 정보는 featureExtraction에서 제공됩니다.
+     * 1. 현재 프레임의 포즈 초기화
+     *   1) 첫 번째 프레임인 경우, 원시 IMU 데이터의 RPY를 사용하여 현재 프레임의 포즈(회전 부분)를 초기화합니다.
+     *   2) 이후 프레임에서는 IMU 오도메트리를 사용하여 두 프레임 간의 포즈 변환을 계산하고, 이를 이전 프레임의 라이다 포즈에 적용하여 현재 프레임의 라이다 포즈를 얻습니다.
+     * 2. 로컬 각도 및 평면 포인트 클라우드를 추출하고 로컬 맵에 추가합니다.
+     *   1) 가장 최근의 키프레임에서 공간 및 시간 차원에서 인접한 키프레임 세트를 검색하고 다운샘플링합니다.
+     *   2) 키프레임 세트의 각 프레임에 대해 해당 각도 및 평면 포인트를 추출하고 로컬 맵에 추가합니다.
+     * 3. 현재 라이다 프레임의 각도 및 평면 포인트 클라우드를 다운샘플링합니다.
+     * 4. 스캔 대 맵을 사용하여 현재 프레임의 포즈를 최적화합니다.
+     *   (1) 현재 프레임의 특징 포인트 수가 충분하고 매칭 포인트 수가 충분한 경우에만 최적화를 수행합니다.
+     *   (2) 최대 30회 반복하여 최적화합니다.
+     *       1) 현재 라이다 프레임 각도 포인트는 로컬 맵에 매칭 포인트를 찾습니다.
+     *          a. 현재 프레임 포즈를 업데이트하고 현재 프레임의 각도 포인트 좌표를 맵 좌표로 변환하고 로컬 맵에서 가장 가까운 1m 이내의 5개 포인트를 검색하며, 이 5개 포인트가 1m 이내에 있고 5개 포인트가 직선을 형성하는 경우 (거리 중심점 및 공분산 행렬, 고유값을 사용하여 확인) 매치된 것으로 간주합니다.
+     *          b. 현재 프레임의 각도 포인트에서 직선까지의 거리 및 수직 단위 벡터를 계산하여 각도 포인트 파라미터로 저장합니다.
+     *       2) 현재 라이다 프레임의 평면 포인트는 로컬 맵에 매칭 포인트를 찾습니다.
+     *          a. 현재 프레임 포즈를 업데이트하고 현재 프레임의 평면 포인트 좌표를 맵 좌표로 변환하고 로컬 맵에서 가장 가까운 1m 이내의 5개 포인트를 검색하며, 이 5개 포인트가 1m 이내에 있고 5개 포인트가 평면을 형성하는 경우 (최소 제곱 평면 적합을 사용하여 확인) 매치된 것으로 간주합니다.
+     *          b. 현재 프레임의 평면 포인트에서 평면까지의 거리 및 수직 단위 벡터를 계산하여 평면 포인트 파라미터로 저장합니다.
+     *       3) 로컬 맵과 매치된 현재 프레임의 각도 및 평면 포인트를 추출하고 동일한 집합에 추가합니다.
+     *       4) 매치된 특징 포인트에 대한 Jacobian 행렬을 계산하고 관측 값은 포인트에서 직선 또는 평면까지의 거리이며, 가우스 뉴턴 방정식을 구성하여 현재 포즈를 반복적으로 최적화합니다. 최적화된 결과는 transformTobeMapped에 저장됩니다.
+     *   (3) IMU 원시 RPY 데이터와 스캔 대 맵 최적화 후의 포즈를 가중 평균하여 현재 프레임의 롤 및 피치를 업데이트하고 Z 좌표를 제한합니다.
+     * 5. 현재 프레임을 키프레임으로 설정하고 팩터 그래프 최적화를 실행합니다.
+     *   1) 현재 프레임과 이전 프레임 사이의 포즈 변환을 계산하고 변화가 작으면 키프레임으로 설정하지 않고, 클 경우 키프레임으로 설정합니다.
+     *   2) 라이다 오도메트리 팩터, GPS 팩터, 루프 클로저 팩터를 추가합니다.
+     *   3) 팩터 그래프 최적화를 수행합니다.
+     *   4) 최적화된 현재 프레임 포즈와 포즈 공분산을 얻습니다.
+     *   5) cloudKeyPoses3D 및 cloudKeyPoses6D를 추가하고 transformTobeMapped을 업데이트하고 현재 키프레임의 각도 및 평면 포인트 클라우드를 추가합니다.
+     * 6. 모든 변수 노드의 포즈를 업데이트하여 모든 이전 키프레임의 포즈를 업데이트하고 오도메트리 경로를 업데이트합니다.
+     * 7. 라이다 오도메트리를 게시합니다.
+     * 8. 오도메트리, 포인트 클라우드, 경로를 게시합니다.
+ */
     void laserCloudInfoHandler(const lio_sam::msg::CloudInfo::SharedPtr msgIn)
     {
         // extract time stamp
+        // 현재 라이다 프레임의 타임스탬프
         timeLaserInfoStamp = msgIn->header.stamp;
         timeLaserInfoCur = stamp2Sec(msgIn->header.stamp);
 
         // extract info and feature cloud
+        // 현재 라이다 포인트 클라우드 정보 추출
         cloudInfo = *msgIn;
         pcl::fromROSMsg(msgIn->cloud_corner,  *laserCloudCornerLast);
         pcl::fromROSMsg(msgIn->cloud_surface, *laserCloudSurfLast);
 
         std::lock_guard<std::mutex> lock(mtx);
 
+        // 매핑 처리 주기 제어
         static double timeLastProcessing = -1;
         if (timeLaserInfoCur - timeLastProcessing >= mappingProcessInterval)
         {
             timeLastProcessing = timeLaserInfoCur;
-
+            // 현재 프레임의 초기 추정값 업데이트
             updateInitialGuess();
 
+            // 주변 키프레임에서 각도 및 평면 포인트 추출 및 로컬 맵에 추가
             extractSurroundingKeyFrames();
 
+            // 현재 라이다 프레임의 각도 및 평면 포인트 클라우드 다운샘플링
             downsampleCurrentScan();
 
+            // 스캔 대 맵을 사용하여 현재 프레임의 포즈 최적화
             scan2MapOptimization();
 
+            // 현재 프레임을 키프레임으로 설정하고 팩터 그래프 최적화 실행
             saveKeyFramesAndFactor();
 
+            // 모든 변수 노드의 포즈 업데이트 및 오도메트리 경로 업데이트
             correctPoses();
 
+            // 라이다 오도메트리 게시
             publishOdometry();
 
+            // 오도메트리, 포인트 클라우드, 경로 게시
             publishFrames();
         }
     }
