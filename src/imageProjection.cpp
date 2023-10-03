@@ -49,7 +49,7 @@ using PointXYZIRT = VelodynePointXYZIRT;
 const int queueLength = 2000;
 
 
-//// ImageProjection class의 맴버 변수 정의
+// ImageProjection class의 맴버 변수 정의
 class ImageProjection : public ParamServer
 {
 private:
@@ -131,7 +131,7 @@ private:
     vector<int> columnIdnCountVec;
 
 
-//// ImageProjection 생성자
+// ImageProjection 생성자
 public:
     ImageProjection(const rclcpp::NodeOptions & options) :
             ParamServer("lio_sam_imageProjection", options), deskewFlag(0)
@@ -260,7 +260,7 @@ public:
         // cout << "roll: " << imuRoll << ", pitch: " << imuPitch << ", yaw: " << imuYaw << endl << endl;
     }
 
-    /*
+    /**
      * imuPreintegration을 통해 얻은 IMU Odometry 정보를 처리하기 위해 imuPreintegration 메시지를 구독합니다.
     */
     void odometryHandler(const nav_msgs::msg::Odometry::SharedPtr odometryMsg)

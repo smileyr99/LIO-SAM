@@ -22,8 +22,8 @@ using gtsam::symbol_shorthand::B; // Bias  (ax,ay,az,gx,gy,gz)
 
 /**
 * TransformFusion 클래스
-* MapOptimization의 라이다 주행 거리계 및 IMU 주행 거리계를 구독하고 이전 순간의 라이다 주행 거리계와 
-* 해당 순간부터 현재 순간까지의 IMU 주행 거리계 변환 변화량을 기반으로 현재 순간의 IMU 주행 거리계를 계산합니다. 
+* MapOptimization의 라이다 오도메트리 및 IMU 오도메트리를 구독하고 이전 순간의 라이다 오도메트리와 
+* 해당 순간부터 현재 순간까지의 IMU 오도메트리 변화량을 기반으로 현재 순간의 IMU 오도메트리를 계산합니다. 
 * rviz는 IMU 주행 거리계를 표시합니다. 궤적(부분).
 */
 
@@ -146,8 +146,8 @@ public:
         Eigen::Isometry3d imuOdomAffineBack = odom2affine(imuOdomQueue.back());
         // IMU 오도메트리 변화량 포즈 변환
         Eigen::Isometry3d imuOdomAffineIncre = imuOdomAffineFront.inverse() * imuOdomAffineBack;
-        // 최근 라이다 오도메트리 포즈 *  IMU 오도메트리 변화량 포즈 변환 =  현재 시간의 IMU 오도메트리 포즈
-        Eigen::Isometry3d imuOdomAffineLast = lidarOdomAffine * imuOdomAffineIncre;
+        // 최근 라이다 오도메트리 포즈 *  IMU 오도메트리 변화량 포즈 변환 =  현재 시간의 IMU 오도메트리 포즈 
+        Eigen::Isometry3d imuOdomAffineLast = lidarOdomAffine * imuOdomAffineIncre; //todo 정확히 값이 어떤 형태인지 모르겠음
         auto t = tf2::eigenToTransform(imuOdomAffineLast);
         tf2::Stamped<tf2::Transform> tCur;
         tf2::convert(t, tCur);

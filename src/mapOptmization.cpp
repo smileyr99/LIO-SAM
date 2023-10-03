@@ -417,33 +417,56 @@ public:
 
         std::lock_guard<std::mutex> lock(mtx);
 
-        // 매핑 처리 주기 제어
+        // 매핑 실행 빈도 제어
         static double timeLastProcessing = -1;
         if (timeLaserInfoCur - timeLastProcessing >= mappingProcessInterval)
         {
             timeLastProcessing = timeLaserInfoCur;
             // 현재 프레임의 초기 추정값 업데이트
+            // 1. 첫 번째 프레임이면 원시 imu 데이터의 RPY를 사용하여 현재 프레임의 자세를 초기화합니다 (회전 부분).
+            // 2. 이후의 프레임에서는 imu 오도미터를 사용하여 두 프레임 간의 증가 자세 변환을 계산하고 이를 이전 프레임의 레이저 자세에 적용하여 현재 프레임 레이저 자세를 얻습니다.
             updateInitialGuess();
 
-            // 주변 키프레임에서 각도 및 평면 포인트 추출 및 로컬 맵에 추가
+            // 주변 키프레임에서 로컬 코너 및 서피스 포인트 클라우드 추출 및 로컬 맵에 추가
+            // 1. 가장 최근의 키프레임에서 공간 및 시간 차원에서 이웃하는 키프레임 집합을 검색하고 샘플링합니다.
+            // 2. 키프레임 집합의 각 프레임에서 해당하는 코너 및 서피스 포인트를 추출하고 로컬 맵에 추가합니다.
             extractSurroundingKeyFrames();
 
-            // 현재 라이다 프레임의 각도 및 평면 포인트 클라우드 다운샘플링
+            // 현재 레이저 프레임의 코너 및 평면 포인트 클라우드 다운샘플링
             downsampleCurrentScan();
 
-            // 스캔 대 맵을 사용하여 현재 프레임의 포즈 최적화
+            // scan-to-map 최적화를 통해 현재 프레임 자세 최적화
+            // 1. 현재 프레임의 특징 포인트 수가 충분하고 매치 포인트가 충분한 경우에만 최적화를 수행합니다.
+            // 2. 최대 30번 반복 (상한) 최적화
+            //    1) 현재 레이저 프레임의 코너를 로컬 맵에 매칭
+            //       a. 현재 프레임 자세를 업데이트하고 현재 프레임 코너 좌표를 맵 좌표로 변환하고 로컬 맵에서 5개의 가장 가까운 포인트를 찾습니다. 거리가 1m 미만이고 5개의 포인트가 직선을 형성하면 (중심점으로부터의 거리 및 공분산 행렬, 고유값 사용) 일치했다고 간주합니다.
+            //       b. 현재 프레임 코너에서 직선까지의 거리 및 수직선의 단위 벡터를 계산하고 코너 매개 변수로 저장합니다.
+            //    2) 현재 레이저 프레임의 평면을 로컬 맵에 매칭
+            //       a. 현재 프레임 자세를 업데이트하고 현재 프레임 평면 좌표를 맵 좌표로 변환하고 로컬 맵에서 5개의 가장 가까운 포인트를 찾습니다. 거리가 1m 미만이고 5개의 포인트가 평면을 형성하면 (최소 제곱 평면을 적합) 일치했다고 간주합니다.
+            //       b. 현재 프레임 평면에서 평면까지의 거리 및 수직선의 단위 벡터를 계산하고 평면 매개 변수로 저장합니다.
+            //    3) 현재 프레임에서 로컬 맵에 일치하는 코너 및 평면을 추출하고 동일한 집합에 추가합니다.
+            //    4) 일치하는 특징 포인트에 대한 Jacobian 행렬을 계산하고 관측 값은 특징 포인트에서 직선 또는 평면까지의 거리입니다. 가우스 뉴턴 방정식을 구성하고 현재 자세에 대한 반복 최적화를 수행하여 transformTobeMapped을 저장합니다.
+            // 3. imu 원시 RPY 데이터와 scan-to-map 최적화된 자세를 가중치로 결합하여 현재 프레임의 roll, pitch를 업데이트하고 z 좌표를 제한합니다.
             scan2MapOptimization();
 
-            // 현재 프레임을 키프레임으로 설정하고 팩터 그래프 최적화 실행
+            // 현재 프레임을 키프레임으로 설정하고 그래프 최적화 수행
+            // 1. 현재 프레임과 이전 프레임 자세 변환을 계산하고 변화가 너무 작으면 키프레임으로 설정하지 않습니다. 그렇지 않으면 키프레임으로 설정합니다.
+            // 2. 레이저 오도미터 팩터, GPS 팩터, 루프 클로저 팩터를 추가합니다.
+            // 3. 그래프 최적화를 수행합니다.
+            // 4. 최적화된 현재 프레임 자세, 자세 공분산을 얻습니다. cloudKeyPoses3D, cloudKeyPoses6D를 추가하고 transformTobeMapped을 업데이트하고 현재 키프레임의 코너 및 평면 포인트를 추가합니다.            
             saveKeyFramesAndFactor();
 
-            // 모든 변수 노드의 포즈 업데이트 및 오도메트리 경로 업데이트
+            // 그래프에서 모든 변수 노드의 자세를 업데이트합니다. 즉, 모든 이전 키프레임의 자세를 업데이트하고 오도메트리 경로를 업데이트합니다.
             correctPoses();
 
             // 라이다 오도메트리 게시
             publishOdometry();
 
-            // 오도메트리, 포인트 클라우드, 경로 게시
+            // 오도미터, 포인트 클라우드, 트라젝토리를 게시합니다.
+            // 1. 과거 키프레임 자세를 게시합니다.
+            // 2. 로컬 맵의 다운샘플링된 평면 포인트를 게시합니다.
+            // 3. 히스토리 프레임 (누적된)의 코너 및 평면 포인트 다운샘플링 세트를 게시합니다.
+            // 4. 오도미터 트라젝토리를 게시합니다.
             publishFrames();
         }
     }
@@ -616,10 +639,17 @@ public:
 
 
 
-
-
+    /**
+     * 루프 클로저 검출 스레드
+     * 1. 루프 클로저 검출 scan-to-map, ICP를 사용하여 자세 최적화
+     *   1) 과거 키프레임 중 현재 키프레임과 가장 가까운 키프레임 집합을 찾고, 일정 시간이 지난 키프레임 중 하나를 선택하여 후보로 선정
+     *   2) 현재 키프레임 특징점 집합을 추출하고 다운샘플링; 루프 클로저 매칭 키프레임 앞뒤의 일부 키프레임 특징점 집합을 추출하고 다운샘플링
+     *   3) scan-to-map 최적화 실행, ICP 메소드 호출, 최적화된 자세 획득, 闭环 인자에 필요한 데이터를 생성하여 그래프 최적화에서 자세를 업데이트
+     * 2. rviz에 루프 클로저 경계 표시
+    */
     void loopClosureThread()
     {
+        // 루피 클로저 감지 플래그 확인
         if (loopClosureEnableFlag == false)
             return;
 
@@ -627,7 +657,15 @@ public:
         while (rclcpp::ok())
         {
             rate.sleep();
+
+            // 루프 클로저 검출, scan-to-map 자세 최적화
+            // 1. 현재 키프레임과 가장 가까운 키프레임 집합을 찾아 일정 시간이 지난 키프레임 중 하나를 선택하여 후보로 선정
+            // 2. 현재 키프레임 특징점 집합을 추출하고 다운샘플링; 闭环 매칭 키프레임 앞뒤의 일부 키프레임 특징점 집합을 추출하고 다운샘플링
+            // 3. scan-to-map 최적화 실행, ICP 메소드 호출, 최적화된 자세 획득, 闭环 인자에 필요한 데이터를 생성하여 그래프 최적화에서 자세를 업데이트
+            // 주의: 루프 클로저 시 현재 프레임 자세를 즉시 업데이트하지 않고, 루프 클로저 인자를 추가하여 그래프 최적화가 자세를 업데이트하도록 함
             performLoopClosure();
+            
+            // rviz에 루프 클로저 경계 표시 
             visualizeLoopClosure();
         }
     }
@@ -644,6 +682,14 @@ public:
             loopInfoVec.pop_front();
     }
 
+
+    /**
+     * 루프 클로저 스캔-투-맵, ICP로 최적화된 자세
+     * 1. 현재 키프레임과 가장 가까운 역사적 키프레임 모음을 찾아 시간 차이가 큰 프레임을 후보로 선택합니다.
+     * 2. 현재 키프레임 특징점 집합을 추출하고 다운 샘플링하며, 닫힌 루프 매칭 키프레임 주변의 몇 프레임의 특징점을 추출하고 다운 샘플링합니다.
+     * 3. 스캔-투-맵 최적화를 수행하고 ICP 메소드를 호출하여 최적화된 자세를 얻으며, 닫힌 루프 요소에 필요한 데이터를 생성하고, 그래프 최적화에서 업데이트된 자세를 동시에 추가합니다.
+     * 참고: 닫힌 루프시 현재 프레임 자세를 즉시 업데이트하지 않고, 대신 닫힌 루프 요소를 추가하여 그래프 최적화에서 자세를 업데이트하도록 합니다.
+    */
     void performLoopClosure()
     {
         if (cloudKeyPoses3D->points.empty() == true)
@@ -655,25 +701,33 @@ public:
         mtx.unlock();
 
         // find keys
+        // 현재 키프레임 인덱스, 닫힌 루프 매칭 프레임 인덱스
         int loopKeyCur;
         int loopKeyPre;
         if (detectLoopClosureExternal(&loopKeyCur, &loopKeyPre) == false)
+            // 현재 키프레임과 가장 가까운 역사적 키프레임 모음을 찾아 시간 차이가 큰 프레임을 후보로 선택합니다.
             if (detectLoopClosureDistance(&loopKeyCur, &loopKeyPre) == false)
                 return;
 
         // extract cloud
+        // 추출
         pcl::PointCloud<PointType>::Ptr cureKeyframeCloud(new pcl::PointCloud<PointType>());
         pcl::PointCloud<PointType>::Ptr prevKeyframeCloud(new pcl::PointCloud<PointType>());
         {
+            // 현재 키프레임 특징점 집합을 추출하고 다운 샘플링합니다.
             loopFindNearKeyframes(cureKeyframeCloud, loopKeyCur, 0);
+            // 닫힌 루프 매칭 키프레임 주변의 몇 프레임의 특징점을 추출하고 다운 샘플링합니다.
             loopFindNearKeyframes(prevKeyframeCloud, loopKeyPre, historyKeyframeSearchNum);
+            // 특징점이 충분히 적으면 반환합니다.
             if (cureKeyframeCloud->size() < 300 || prevKeyframeCloud->size() < 1000)
                 return;
+            // 닫힌 루프 매칭 키프레임의 지역 맵을 게시합니다.
             if (pubHistoryKeyFrames->get_subscription_count() != 0)
                 publishCloud(pubHistoryKeyFrames, prevKeyframeCloud, timeLaserInfoStamp, odometryFrame);
         }
 
         // ICP Settings
+        // ICP 매개변수 설정
         static pcl::IterativeClosestPoint<PointType, PointType> icp;
         icp.setMaxCorrespondenceDistance(historyKeyframeSearchRadius*2);
         icp.setMaximumIterations(100);
@@ -682,15 +736,18 @@ public:
         icp.setRANSACIterations(0);
 
         // Align clouds
+        // 스캔-투-맵, ICP 매칭 수행
         icp.setInputSource(cureKeyframeCloud);
         icp.setInputTarget(prevKeyframeCloud);
         pcl::PointCloud<PointType>::Ptr unused_result(new pcl::PointCloud<PointType>());
         icp.align(*unused_result);
 
+        // 수렴하지 않았거나 매칭이 충분히 좋지 않으면 반환합니다.
         if (icp.hasConverged() == false || icp.getFitnessScore() > historyKeyframeFitnessScore)
             return;
 
         // publish corrected cloud
+        // 닫힌 루프 최적화 후 현재 키프레임의 자세를 변환한 특징점 클라우드를 게시합니다.
         if (pubIcpKeyFrames->get_subscription_count() != 0)
         {
             pcl::PointCloud<PointType>::Ptr closed_cloud(new pcl::PointCloud<PointType>());
@@ -699,15 +756,19 @@ public:
         }
 
         // Get pose transformation
+        // 닫힌 루프 최적화 후 현재 키프레임과 닫힌 루프 키프레임 간의 자세 변환
         float x, y, z, roll, pitch, yaw;
         Eigen::Affine3f correctionLidarFrame;
         correctionLidarFrame = icp.getFinalTransformation();
         // transform from world origin to wrong pose
+        // 닫힌 루프 최적화 이전 현재 프레임 자세
         Eigen::Affine3f tWrong = pclPointToAffine3f(copy_cloudKeyPoses6D->points[loopKeyCur]);
         // transform from world origin to corrected pose
+        // 닫힌 루프 최적화 후 현재 프레임 자세
         Eigen::Affine3f tCorrect = correctionLidarFrame * tWrong;// pre-multiplying -> successive rotation about a fixed frame
         pcl::getTranslationAndEulerAngles (tCorrect, x, y, z, roll, pitch, yaw);
         gtsam::Pose3 poseFrom = Pose3(Rot3::RzRyRx(roll, pitch, yaw), Point3(x, y, z));
+        // 닫힌 루프 매칭 프레임의 자세
         gtsam::Pose3 poseTo = pclPointTogtsamPose3(copy_cloudKeyPoses6D->points[loopKeyPre]);
         gtsam::Vector Vector6(6);
         float noiseScore = icp.getFitnessScore();
@@ -715,6 +776,7 @@ public:
         noiseModel::Diagonal::shared_ptr constraintNoise = noiseModel::Diagonal::Variances(Vector6);
 
         // Add pose constraint
+        // 닫힌 루프 요소에 필요한 데이터 추가
         mtx.lock();
         loopIndexQueue.push_back(make_pair(loopKeyCur, loopKeyPre));
         loopPoseQueue.push_back(poseFrom.between(poseTo));
@@ -725,22 +787,29 @@ public:
         loopIndexContainer[loopKeyCur] = loopKeyPre;
     }
 
+    /**
+     * 현재 키프레임과 거리가 가장 가까운 키프레임 집합을 기반으로 하여, 시간 차이가 큰 키프레임을 선택하여 닫힌 루프 후보 프레임으로 결정합니다.
+    */
     bool detectLoopClosureDistance(int *latestID, int *closestID)
     {
+        // 현재 키프레임 인덱스
         int loopKeyCur = copy_cloudKeyPoses3D->size() - 1;
         int loopKeyPre = -1;
 
         // check loop constraint added before
+        // 현재 프레임에 대한 닫힌 루프 매칭이 이미 추가되었습니다. 추가하지 않습니다.
         auto it = loopIndexContainer.find(loopKeyCur);
         if (it != loopIndexContainer.end())
             return false;
 
         // find the closest history key frame
+        // 현재 키프레임과 거리가 가장 가까운 키프레임을 찾습니다.
         std::vector<int> pointSearchIndLoop;
         std::vector<float> pointSearchSqDisLoop;
         kdtreeHistoryKeyPoses->setInputCloud(copy_cloudKeyPoses3D);
         kdtreeHistoryKeyPoses->radiusSearch(copy_cloudKeyPoses3D->back(), historyKeyframeSearchRadius, pointSearchIndLoop, pointSearchSqDisLoop, 0);
         
+        // 후보 키프레임 세트에서 현재 프레임과의 시간 차이가 큰 프레임을 찾아 닫힌 루프 매칭 프레임으로 선택합니다.
         for (int i = 0; i < (int)pointSearchIndLoop.size(); ++i)
         {
             int id = pointSearchIndLoop[i];
@@ -814,9 +883,14 @@ public:
         return true;
     }
 
+
+    /**
+     * 주어진 키프레임 인덱스의 앞뒤로 몇 프레임의 키프레임 특징점을 추출하고 다운샘플링합니다.
+    */
     void loopFindNearKeyframes(pcl::PointCloud<PointType>::Ptr& nearKeyframes, const int& key, const int& searchNum)
     {
         // extract near keyframes
+        // 주어진 키프레임 인덱스의 앞뒤로 몇 프레임의 키프레임 특징점을 추출합니다.
         nearKeyframes->clear();
         int cloudSize = copy_cloudKeyPoses6D->size();
         for (int i = -searchNum; i <= searchNum; ++i)
@@ -832,6 +906,7 @@ public:
             return;
 
         // downsample near keyframes
+        // 다운샘플링
         pcl::PointCloud<PointType>::Ptr cloud_temp(new pcl::PointCloud<PointType>());
         downSizeFilterICP.setInputCloud(nearKeyframes);
         downSizeFilterICP.filter(*cloud_temp);
@@ -900,64 +975,91 @@ public:
     
 
 
-
+    /**
+     * 현재 프레임 자세 초기화
+     * 1. 첫 번째 프레임인 경우, 원시 IMU 데이터의 RPY를 사용하여 현재 프레임 자세를 초기화합니다 (회전 부분).
+     * 2. 이후의 프레임에서는 IMU 오도미터를 사용하여 두 프레임 간의 증분 자세 변환을 계산하고 이를 이전 프레임의 레이저 자세에 적용하여 현재 프레임 레이저 자세를 얻습니다.
+    */
     void updateInitialGuess()
     {
         // save current transformation before any processing
+        // 이전 프레임의 자세, 여기서는 LIDAR의 자세를 의미하며 이후에는 자세로 간략히 표시합니다.
         incrementalOdometryAffineFront = trans2Affine3f(transformTobeMapped);
 
+        // 이전 프레임의 초기 IMU 변환 (RPY는 IMU의 원시 데이터에서 가져옴) - 첫 번째 프레임이 아닌 경우에만 사용됨
         static Eigen::Affine3f lastImuTransformation;
         // initialization
+        // 키프레임 세트가 비어 있는 경우 초기화 계속 진행
         if (cloudKeyPoses3D->points.empty())
-        {
+        {   
+            // 현재 프레임의 자세의 회전 부분을 초기화합니다. 이 값은 IMU의 원시 데이터에서 얻은 RPY입니다.
             transformTobeMapped[0] = cloudInfo.imu_roll_init;
             transformTobeMapped[1] = cloudInfo.imu_pitch_init;
             transformTobeMapped[2] = cloudInfo.imu_yaw_init;
 
+            // IMU 헤딩 초기화를 사용하지 않는 경우, Yaw 값을 0으로 설정합니다.
             if (!useImuHeadingInitialization)
                 transformTobeMapped[2] = 0;
 
+            // 초기 IMU 변환을 저장하고 반환합니다. 
             lastImuTransformation = pcl::getTransformation(0, 0, 0, cloudInfo.imu_roll_init, cloudInfo.imu_pitch_init, cloudInfo.imu_yaw_init); // save imu before return;
             return;
         }
 
         // use imu pre-integration estimation for pose guess
+        // 현재 프레임과 해당하는 이전 프레임의 IMU 오도미터를 사용하여 상대적인 자세 변환을 계산하고, 이전 프레임의 자세에 이를 적용하여 현재 프레임의 자세를 얻습니다.
         static bool lastImuPreTransAvailable = false;
         static Eigen::Affine3f lastImuPreTransformation;
+        // IMU 오도미터 정보가 있는 경우
         if (cloudInfo.odom_available == true)
         {
+            // 현재 프레임의 초기 추정 자세 (IMU 오도미터에서 얻음)
             Eigen::Affine3f transBack = pcl::getTransformation(
                 cloudInfo.initial_guess_x, cloudInfo.initial_guess_y, cloudInfo.initial_guess_z,
                 cloudInfo.initial_guess_roll, cloudInfo.initial_guess_pitch, cloudInfo.initial_guess_yaw);
+            // 이전 IMU 변환 정보가 사용 가능하지 않은 경우, 현재 IMU 변환 정보를 저장하고 반환합니다.
             if (lastImuPreTransAvailable == false)
             {
                 lastImuPreTransformation = transBack;
                 lastImuPreTransAvailable = true;
             } else {
+                // 현재 프레임과 이전 프레임 간의 상대적인 자세 변환 (IMU 오도미터에 의해 계산됨)
                 Eigen::Affine3f transIncre = lastImuPreTransformation.inverse() * transBack;
+                // 이전 프레임의 자세
                 Eigen::Affine3f transTobe = trans2Affine3f(transformTobeMapped);
+                // 현재 프레임의 자세
                 Eigen::Affine3f transFinal = transTobe * transIncre;
+                // 현재 프레임 자세를 업데이트합니다.
                 pcl::getTranslationAndEulerAngles(transFinal, transformTobeMapped[3], transformTobeMapped[4], transformTobeMapped[5], 
                                                               transformTobeMapped[0], transformTobeMapped[1], transformTobeMapped[2]);
 
+                // 이전 IMU 변환 정보를 저장합니다.
                 lastImuPreTransformation = transBack;
 
+                // IMU 변환 정보를 저장하고 반환합니다.
                 lastImuTransformation = pcl::getTransformation(0, 0, 0, cloudInfo.imu_roll_init, cloudInfo.imu_pitch_init, cloudInfo.imu_yaw_init); // save imu before return;
                 return;
             }
         }
 
         // use imu incremental estimation for pose guess (only rotation)
+        // 첫 번째 프레임에서만 호출되며, IMU 데이터를 사용하여 현재 프레임 자세를 초기화합니다. 여기서는 회전 부분만 초기화합니다.
         if (cloudInfo.imu_available == true)
         {
+            // 현재 프레임의 자세 각도 (원시 IMU 데이터에서 가져옴)
             Eigen::Affine3f transBack = pcl::getTransformation(0, 0, 0, cloudInfo.imu_roll_init, cloudInfo.imu_pitch_init, cloudInfo.imu_yaw_init);
+            // 현재 프레임과 이전 프레임 간의 상대적인 자세 변환
             Eigen::Affine3f transIncre = lastImuTransformation.inverse() * transBack;
 
+            // 이전 프레임의 자세
             Eigen::Affine3f transTobe = trans2Affine3f(transformTobeMapped);
+            // 현재 프레임의 자세
             Eigen::Affine3f transFinal = transTobe * transIncre;
+            // 현재 프레임 자세를 업데이트합니다.
             pcl::getTranslationAndEulerAngles(transFinal, transformTobeMapped[3], transformTobeMapped[4], transformTobeMapped[5], 
                                                           transformTobeMapped[0], transformTobeMapped[1], transformTobeMapped[2]);
 
+            // IMU 변환 정보를 저장하고 반환합니다.
             lastImuTransformation = pcl::getTransformation(0, 0, 0, cloudInfo.imu_roll_init, cloudInfo.imu_pitch_init, cloudInfo.imu_yaw_init); // save imu before return;
             return;
         }
@@ -978,6 +1080,11 @@ public:
         extractCloud(cloudToExtract);
     }
 
+    /**
+     * 주변 지점에서의 키포즈 및 지점을 추출하고 로컬 맵에 추가합니다.
+     * 1. 가장 최근의 키포즈 키프레임에 대해 시공간 상에서 인접한 키포즈 프레임 세트를 검색하고 다운샘플링합니다.
+     * 2. 검색된 각 키포즈 프레임에서 해당하는 코너 및 평면 포인트를 추출하여 로컬 맵에 추가합니다.
+    */
     void extractNearby()
     {
         pcl::PointCloud<PointType>::Ptr surroundingKeyPoses(new pcl::PointCloud<PointType>());
@@ -986,14 +1093,18 @@ public:
         std::vector<float> pointSearchSqDis;
 
         // extract all the nearby key poses and downsample them
+        // kdtree의 입력으로 전역 키포즈 포인트 클라우드를 설정합니다.
         kdtreeSurroundingKeyPoses->setInputCloud(cloudKeyPoses3D); // create kd-tree
+        // 최근의 키포즈 프레임을 기준으로 반경 내에서 시공간에 대한 이웃 키포즈 프레임 세트를 검색합니다.
         kdtreeSurroundingKeyPoses->radiusSearch(cloudKeyPoses3D->back(), (double)surroundingKeyframeSearchRadius, pointSearchInd, pointSearchSqDis);
         for (int i = 0; i < (int)pointSearchInd.size(); ++i)
         {
             int id = pointSearchInd[i];
+            // 주변 키포즈 집합에 추가합니다.
             surroundingKeyPoses->push_back(cloudKeyPoses3D->points[id]);
         }
 
+        // 다운샘플링합니다.
         downSizeFilterSurroundingKeyPoses.setInputCloud(surroundingKeyPoses);
         downSizeFilterSurroundingKeyPoses.filter(*surroundingKeyPosesDS);
         for(auto& pt : surroundingKeyPosesDS->points)
@@ -1003,6 +1114,7 @@ public:
         }
 
         // also extract some latest key frames in case the robot rotates in one position
+        // 시간상으로 가까운 몇몇 키포즈도 추가합니다. 예를 들어, 차량이 원형 회전하는 경우 이러한 프레임을 추가하는 것이 합리적입니다.
         int numPoses = cloudKeyPoses3D->size();
         for (int i = numPoses-1; i >= 0; --i)
         {
@@ -1012,19 +1124,28 @@ public:
                 break;
         }
 
+        // 추출된 주변 키포즈 세트에 해당하는 코너 및 평면 포인트를 로컬 맵에 추가하여 scan-to-map 매칭에 사용될 로컬 포인트 클라우드 맵을 생성합니다.
         extractCloud(surroundingKeyPosesDS);
     }
+    
 
+    /**
+     * 이웃한 키포즈 집합에 해당하는 코너 및 평면 포인트를 로컬 맵에 추가하고, scan-to-map 매칭에 사용될 로컬 포인트 클라우드 맵을 생성합니다.
+    */
     void extractCloud(pcl::PointCloud<PointType>::Ptr cloudToExtract)
     {
         // fuse the map
+        // 이웃한 키포즈 집합에 해당하는 코너 및 평면 포인트를 로컬 맵에 추가합니다.
         laserCloudCornerFromMap->clear();
         laserCloudSurfFromMap->clear(); 
+        // 현재 프레임 (실제로는 가장 가까운 키포즈를 사용하여 해당 키포즈의 이웃을 찾음) 에 대한 시간 및 공간 차원상의 이웃 키포즈 집합을 반복합니다.
         for (int i = 0; i < (int)cloudToExtract->size(); ++i)
         {
+            // 설정한 거리보다 크면 제외합니다.
             if (pointDistance(cloudToExtract->points[i], cloudKeyPoses3D->back()) > surroundingKeyframeSearchRadius)
                 continue;
 
+            // 이웃 키포즈 인덱스
             int thisKeyInd = (int)cloudToExtract->points[i].intensity;
             if (laserCloudMapContainer.find(thisKeyInd) != laserCloudMapContainer.end()) 
             {
@@ -1033,8 +1154,10 @@ public:
                 *laserCloudSurfFromMap   += laserCloudMapContainer[thisKeyInd].second;
             } else {
                 // transformed cloud not available
+                // 이웃 키포즈에 해당하는 코너 및 평면 포인트 클라우드를 6D 포즈로 변환하여 월드 좌표계로 가져옵니다.
                 pcl::PointCloud<PointType> laserCloudCornerTemp = *transformPointCloud(cornerCloudKeyFrames[thisKeyInd],  &cloudKeyPoses6D->points[thisKeyInd]);
                 pcl::PointCloud<PointType> laserCloudSurfTemp = *transformPointCloud(surfCloudKeyFrames[thisKeyInd],    &cloudKeyPoses6D->points[thisKeyInd]);
+                // 로컬 맵에 추가합니다.
                 *laserCloudCornerFromMap += laserCloudCornerTemp;
                 *laserCloudSurfFromMap   += laserCloudSurfTemp;
                 laserCloudMapContainer[thisKeyInd] = make_pair(laserCloudCornerTemp, laserCloudSurfTemp);
@@ -1043,19 +1166,28 @@ public:
         }
 
         // Downsample the surrounding corner key frames (or map)
+        // 로컬 코너 맵 다운샘플링
         downSizeFilterCorner.setInputCloud(laserCloudCornerFromMap);
         downSizeFilterCorner.filter(*laserCloudCornerFromMapDS);
         laserCloudCornerFromMapDSNum = laserCloudCornerFromMapDS->size();
         // Downsample the surrounding surf key frames (or map)
+        // 로컬 서피스 맵 다운샘플링
         downSizeFilterSurf.setInputCloud(laserCloudSurfFromMap);
         downSizeFilterSurf.filter(*laserCloudSurfFromMapDS);
         laserCloudSurfFromMapDSNum = laserCloudSurfFromMapDS->size();
 
         // clear map cache if too large
+        // 메모리가 너무 크면 지웁니다.
         if (laserCloudMapContainer.size() > 1000)
             laserCloudMapContainer.clear();
     }
 
+
+    /**
+     * 이웃한 키포즈의 코너 및 평면 포인트 클라우드를 추출하여 로컬 맵에 추가합니다.
+     * 1. 최근 키포즈 프레임에 대해 시공간상에서 인접한 키포즈 프레임 세트를 검색하고 다운샘플링합니다.
+     * 2. 검색된 각 키포즈 프레임에서 해당하는 코너 및 평면 포인트를 추출하여 로컬 맵에 추가합니다.
+    */
     void extractSurroundingKeyFrames()
     {
         if (cloudKeyPoses3D->points.empty() == true)
@@ -1068,6 +1200,9 @@ public:
         //     extractNearby();
         // }
 
+        // 로컬 코너 및 평면 포인트 클라우드를 추출하고 로컬 맵에 추가합니다.
+        // 1. 최근의 키포즈 프레임에 대해 시공간상에서 인접한 키포즈 프레임 세트를 검색하고 다운샘플링합니다.
+        // 2. 검색된 각 키포즈 프레임에서 해당하는 코너 및 평면 포인트를 추출하여 로컬 맵에 추가합니다.
         extractNearby();
     }
 
@@ -1089,27 +1224,40 @@ public:
     {
         transPointAssociateToMap = trans2Affine3f(transformTobeMapped);
     }
+    
 
+    /**
+     * 현재 레이저 프레임 코너 포인트를 로컬 맵 매칭 포인트로 찾습니다.
+     * 1. 현재 프레임 위치를 업데이트하고, 현재 프레임 코너 포인트 좌표를 맵 좌표계로 변환한 후, 로컬 맵에서 5개의 가장 가까운 포인트를 찾습니다.
+     *    이 포인트들은 1m 이내에 있어야 하고, 5개의 포인트가 선을 이루어야 합니다. (중심점으로부터의 거리의 공분산 행렬과 특이값을 사용하여 판단)
+     * 2. 현재 프레임 코너 포인트에서 찾은 선까지의 거리와 수직 단위 벡터를 계산하여 코너 매개변수로 저장합니다.
+    */
     void cornerOptimization()
     {
+        // 현재 프레임 위치를 업데이트합니다.
         updatePointAssociateToMap();
 
+        // 현재 프레임 코너 포인트를 순회합니다.
         #pragma omp parallel for num_threads(numberOfCores)
         for (int i = 0; i < laserCloudCornerLastDSNum; i++)
         {
             PointType pointOri, pointSel, coeff;
             std::vector<int> pointSearchInd;
             std::vector<float> pointSearchSqDis;
-
+            // 코너 포인트 (여전히 lidar 좌표계)
             pointOri = laserCloudCornerLastDS->points[i];
+            // 현재 프레임 위치에 따라 맵 좌표계로 변환합니다.
             pointAssociateToMap(&pointOri, &pointSel);
+            // 로컬 코너 맵에서 현재 코너 포인트에 가장 가까운 5개의 코너 포인트를 찾습니다.
             kdtreeCornerFromMap->nearestKSearch(pointSel, 5, pointSearchInd, pointSearchSqDis);
 
             cv::Mat matA1(3, 3, CV_32F, cv::Scalar::all(0));
             cv::Mat matD1(1, 3, CV_32F, cv::Scalar::all(0));
             cv::Mat matV1(3, 3, CV_32F, cv::Scalar::all(0));
                     
+            // 거리가 1m보다 작아야 합니다.
             if (pointSearchSqDis[4] < 1.0) {
+                // 5개 포인트의 평균 좌표를 계산하여 중심점으로 사용합니다.
                 float cx = 0, cy = 0, cz = 0;
                 for (int j = 0; j < 5; j++) {
                     cx += laserCloudCornerFromMapDS->points[pointSearchInd[j]].x;
@@ -1118,6 +1266,7 @@ public:
                 }
                 cx /= 5; cy /= 5;  cz /= 5;
 
+                // 공분산을 계산합니다.
                 float a11 = 0, a12 = 0, a13 = 0, a22 = 0, a23 = 0, a33 = 0;
                 for (int j = 0; j < 5; j++) {
                     float ax = laserCloudCornerFromMapDS->points[pointSearchInd[j]].x - cx;
@@ -1130,17 +1279,20 @@ public:
                 }
                 a11 /= 5; a12 /= 5; a13 /= 5; a22 /= 5; a23 /= 5; a33 /= 5;
 
+                // 공분산 행렬을 구성합니다.
                 matA1.at<float>(0, 0) = a11; matA1.at<float>(0, 1) = a12; matA1.at<float>(0, 2) = a13;
                 matA1.at<float>(1, 0) = a12; matA1.at<float>(1, 1) = a22; matA1.at<float>(1, 2) = a23;
                 matA1.at<float>(2, 0) = a13; matA1.at<float>(2, 1) = a23; matA1.at<float>(2, 2) = a33;
 
+                // 특이값 분해를 수행합니다.
                 cv::eigen(matA1, matD1, matV1);
-
+                // 만약 최대 특징값이 다음으로 큰 특징값보다 훨씬 크다면, 이는 선을 형성한다고 간주합니다.
                 if (matD1.at<float>(0, 0) > 3 * matD1.at<float>(0, 1)) {
-
+                    // 현재 프레임의 코너 좌표 (맵 좌표계)
                     float x0 = pointSel.x;
                     float y0 = pointSel.y;
                     float z0 = pointSel.z;
+                    // 로컬 맵에 해당하는 중심 코너, 특징 벡터 (선의 방향)을 따라 전방 및 후방으로 각각 가져옵니다.
                     float x1 = cx + 0.1 * matV1.at<float>(0, 0);
                     float y1 = cy + 0.1 * matV1.at<float>(0, 1);
                     float z1 = cz + 0.1 * matV1.at<float>(0, 2);
@@ -1148,12 +1300,15 @@ public:
                     float y2 = cy - 0.1 * matV1.at<float>(0, 1);
                     float z2 = cz - 0.1 * matV1.at<float>(0, 2);
 
+                    // area_012, 세 점으로 이루어진 삼각형의 면적 * 2, 외적의 크기 |axb|=a*b*sin(theta)
                     float a012 = sqrt(((x0 - x1)*(y0 - y2) - (x0 - x2)*(y0 - y1)) * ((x0 - x1)*(y0 - y2) - (x0 - x2)*(y0 - y1)) 
                                     + ((x0 - x1)*(z0 - z2) - (x0 - x2)*(z0 - z1)) * ((x0 - x1)*(z0 - z2) - (x0 - x2)*(z0 - z1)) 
                                     + ((y0 - y1)*(z0 - z2) - (y0 - y2)*(z0 - z1)) * ((y0 - y1)*(z0 - z2) - (y0 - y2)*(z0 - z1)));
 
+                    // line_12, 기본 변 길이
                     float l12 = sqrt((x1 - x2)*(x1 - x2) + (y1 - y2)*(y1 - y2) + (z1 - z2)*(z1 - z2));
 
+                    // 두 번의 외적을 통해 점에서 선까지의 수직 단위 벡터, x 성분, 이하 동일
                     float la = ((y1 - y2)*((x0 - x1)*(y0 - y2) - (x0 - x2)*(y0 - y1)) 
                               + (z1 - z2)*((x0 - x1)*(z0 - z2) - (x0 - x2)*(z0 - z1))) / a012 / l12;
 
@@ -1163,17 +1318,23 @@ public:
                     float lc = -((x1 - x2)*((x0 - x1)*(z0 - z2) - (x0 - x2)*(z0 - z1)) 
                                + (y1 - y2)*((y0 - y1)*(z0 - z2) - (y0 - y2)*(z0 - z1))) / a012 / l12;
 
+                    // 삼각형의 높이, 즉 점에서 선까지의 거리
                     float ld2 = a012 / l12;
 
+                    // 거리가 멀어지면 s가 작아지는 거리 페널티 요소 (가중치)
                     float s = 1 - 0.9 * fabs(ld2);
 
+                    // 점에서 선까지의 수직 단위 벡터
                     coeff.x = s * la;
                     coeff.y = s * lb;
                     coeff.z = s * lc;
+                    // 점에서 선까지의 거리
                     coeff.intensity = s * ld2;
 
                     if (s > 0.1) {
+                        // 현재 레이저 프레임 코너를 매칭 세트에 추가합니다.
                         laserCloudOriCornerVec[i] = pointOri;
+                        // 코너 매개 변수
                         coeffSelCornerVec[i] = coeff;
                         laserCloudOriCornerFlag[i] = true;
                     }
@@ -1182,10 +1343,20 @@ public:
         }
     }
 
+
+
+    /**
+     * 현재 레이저 프레임의 서피스 포인트를 로컬 맵 매칭 포인트로 찾습니다.
+     * 1. 현재 프레임 위치를 업데이트하고, 현재 프레임 서피스 포인트 좌표를 맵 좌표계로 변환한 후, 로컬 맵에서 5개의 가장 가까운 포인트를 찾습니다.
+     *    이 포인트들은 1m 이내에 있어야 하고, 5개의 포인트가 평면을 이루어야 합니다. (최소 자승 평면을 이루는데 사용) 그렇지 않으면 매칭 실패로 간주합니다.
+     * 2. 현재 프레임 서피스 포인트에서 찾은 평면까지의 거리와 수직 단위 벡터를 계산하여 서피스 포인트의 매개변수로 저장합니다.
+    */
     void surfOptimization()
     {
+        // 현재 프레임 위치를 업데이트합니다.
         updatePointAssociateToMap();
 
+        // 현재 프레임 서피스 포인트를 순회합니다.
         #pragma omp parallel for num_threads(numberOfCores)
         for (int i = 0; i < laserCloudSurfLastDSNum; i++)
         {
@@ -1193,8 +1364,11 @@ public:
             std::vector<int> pointSearchInd;
             std::vector<float> pointSearchSqDis;
 
+            // 서피스 포인트 (여전히 lidar 좌표계)
             pointOri = laserCloudSurfLastDS->points[i];
+            // 현재 프레임 위치에 따라 맵 좌표계로 변환합니다.
             pointAssociateToMap(&pointOri, &pointSel); 
+            // 로컬 서피스 포인트 맵에서 현재 서피스 포인트에 가장 가까운 5개의 서피스 포인트를 찾습니다.
             kdtreeSurfFromMap->nearestKSearch(pointSel, 5, pointSearchInd, pointSearchSqDis);
 
             Eigen::Matrix<float, 5, 3> matA0;
@@ -1205,6 +1379,7 @@ public:
             matB0.fill(-1);
             matX0.setZero();
 
+            // 거리가 1m보다 작아야 합니다.
             if (pointSearchSqDis[4] < 1.0) {
                 for (int j = 0; j < 5; j++) {
                     matA0(j, 0) = laserCloudSurfFromMapDS->points[pointSearchInd[j]].x;
@@ -1212,16 +1387,20 @@ public:
                     matA0(j, 2) = laserCloudSurfFromMapDS->points[pointSearchInd[j]].z;
                 }
 
+                // 평면을 형성하는데 사용되는 최소 자승 평면을 계산합니다.
                 matX0 = matA0.colPivHouseholderQr().solve(matB0);
 
+                // 평면 방정식의 계수, 동시에 평면의 법선 벡터의 구성 요소입니다.
                 float pa = matX0(0, 0);
                 float pb = matX0(1, 0);
                 float pc = matX0(2, 0);
                 float pd = 1;
-
+                
+                // 단위 법선 벡터
                 float ps = sqrt(pa * pa + pb * pb + pc * pc);
                 pa /= ps; pb /= ps; pc /= ps; pd /= ps;
 
+                // 평면이 적절한지 확인합니다. 5개 포인트 중 하나라도 평면에서의 거리가 0.2m를 초과하면 너무 흩어져 있어서 평면을 이루지 않는 것으로 간주합니다.
                 bool planeValid = true;
                 for (int j = 0; j < 5; j++) {
                     if (fabs(pa * laserCloudSurfFromMapDS->points[pointSearchInd[j]].x +
@@ -1232,19 +1411,26 @@ public:
                     }
                 }
 
+                // 평면이 적절하면
                 if (planeValid) {
+                    // 현재 레이저 프레임 포인트에서 평면까지의 거리를 계산합니다.
                     float pd2 = pa * pointSel.x + pb * pointSel.y + pc * pointSel.z + pd;
 
                     float s = 1 - 0.9 * fabs(pd2) / sqrt(sqrt(pointOri.x * pointOri.x
                             + pointOri.y * pointOri.y + pointOri.z * pointOri.z));
-
+                    
+                    // 포인트에서 평면으로 수직인 단위 벡터 (사실상 평면의 법선 벡터와 동일)
                     coeff.x = s * pa;
                     coeff.y = s * pb;
                     coeff.z = s * pc;
+
+                    // 포인트에서 평면까지의 거리
                     coeff.intensity = s * pd2;
 
                     if (s > 0.1) {
+                        // 현재 레이저 프레임 서피스 포인트를 매칭 세트에 추가합니다.
                         laserCloudOriSurfVec[i] = pointOri;
+                        // 평면 매개변수
                         coeffSelSurfVec[i] = coeff;
                         laserCloudOriSurfFlag[i] = true;
                     }
@@ -1253,9 +1439,11 @@ public:
         }
     }
 
+    // 현재 프레임에서 로컬 맵과 일치하는 코너 및 평면 점을 추출하여 동일한 세트에 추가합니다.
     void combineOptimizationCoeffs()
     {
         // combine corner coeffs
+        // 현재 프레임 코너 집합을 반복하면서 로컬 맵과 일치하는 코너를 추출합니다.
         for (int i = 0; i < laserCloudCornerLastDSNum; ++i){
             if (laserCloudOriCornerFlag[i] == true){
                 laserCloudOri->push_back(laserCloudOriCornerVec[i]);
@@ -1263,6 +1451,7 @@ public:
             }
         }
         // combine surf coeffs
+        // 현재 프레임의 서피스 포인트 세트를 반복하면서 로컬 맵과 일치하는 서피스 포인트를 추출합니다.
         for (int i = 0; i < laserCloudSurfLastDSNum; ++i){
             if (laserCloudOriSurfFlag[i] == true){
                 laserCloudOri->push_back(laserCloudOriSurfVec[i]);
@@ -1270,13 +1459,21 @@ public:
             }
         }
         // reset flag for next iteration
+        // 플래그를 지우기
         std::fill(laserCloudOriCornerFlag.begin(), laserCloudOriCornerFlag.end(), false);
         std::fill(laserCloudOriSurfFlag.begin(), laserCloudOriSurfFlag.end(), false);
     }
 
+
+    /**
+     * 스캔 투 맵 최적화
+     * 일치하는 특징 점에 대한 자코비안 행렬을 계산하고, 관측 값은 특징 점에서 선 또는 평면까지의 거리이며, 가우스 뉴턴 방정식을 구성하여 현재 포즈를 반복적으로 최적화합니다.
+     * 수식 유도: todo
+    */
     bool LMOptimization(int iterCount)
     {
         // This optimization is from the original loam_velodyne by Ji Zhang, need to cope with coordinate transformation
+        // 현재 코드는 Ji Zhang의 loam_velodyne에서 가져온 최적화 코드로, 좌표 변환을 다루어야 합니다.
         // lidar <- camera      ---     camera <- lidar
         // x = z                ---     x = y
         // y = x                ---     y = z
@@ -1293,6 +1490,7 @@ public:
         float srz = sin(transformTobeMapped[0]);
         float crz = cos(transformTobeMapped[0]);
 
+        // 현재 프레임 매칭 특징점 수가 너무 적습니다.
         int laserCloudSelNum = laserCloudOri->size();
         if (laserCloudSelNum < 50) {
             return false;
@@ -1308,6 +1506,7 @@ public:
 
         PointType pointOri, coeff;
 
+        // 매칭 특징점을 반복하며 Jacobian 행렬을 구성합니다.
         for (int i = 0; i < laserCloudSelNum; i++) {
             // lidar -> camera
             pointOri.x = laserCloudOri->points[i].y;
@@ -1338,14 +1537,17 @@ public:
             matA.at<float>(i, 3) = coeff.z;
             matA.at<float>(i, 4) = coeff.x;
             matA.at<float>(i, 5) = coeff.y;
+            // 점에서 직선까지의 거리, 평면까지의 거리를 관찰 값으로 사용
             matB.at<float>(i, 0) = -coeff.intensity;
         }
 
         cv::transpose(matA, matAt);
         matAtA = matAt * matA;
         matAtB = matAt * matB;
+        // J^T·J·delta_x = -J^T·f를 해결하여 가우스-뉴턴을 수행합니다.
         cv::solve(matAtA, matAtB, matX, cv::DECOMP_QR);
 
+        // 첫 번째 반복에서는 근사 헤시안 행렬(J^T·J)이 특이한지 확인합니다. 행렬식 값=0 등
         if (iterCount == 0) {
 
             cv::Mat matE(1, 6, CV_32F, cv::Scalar::all(0));
@@ -1377,6 +1579,7 @@ public:
             matX = matP * matX2;
         }
 
+        // 현재 포즈를 업데이트합니다. x = x + delta_x
         transformTobeMapped[0] += matX.at<float>(0, 0);
         transformTobeMapped[1] += matX.at<float>(1, 0);
         transformTobeMapped[2] += matX.at<float>(2, 0);
@@ -1393,46 +1596,83 @@ public:
                             pow(matX.at<float>(4, 0) * 100, 2) +
                             pow(matX.at<float>(5, 0) * 100, 2));
 
+        // delta_x가 충분히 작으면 수렴했다고 가정합니다.
         if (deltaR < 0.05 && deltaT < 0.05) {
             return true; // converged
         }
         return false; // keep optimizing
     }
 
+
+    /**
+     * "스캔 투 맵"을 사용하여 현재 프레임의 자세 최적화
+     * 1. 현재 프레임의 특징점 수가 충분하고 매칭된 포인트 수가 충분한 경우에만 최적화를 수행합니다.
+     * 2. 30번 반복하여 최적화를 수행합니다.
+     *    1) 현재 라이다 프레임의 코너 포인트가 로컬 맵 매칭 포인트를 찾습니다.
+     *       a. 현재 프레임 자세를 업데이트하고 현재 프레임 코너 포인트 좌표를 맵 좌표로 변환하여 로컬 맵에서 1m 이하의 거리에 있는 5개의 가장 가까운 포인트를 찾습니다. 또한, 이 5개의 포인트가 직선을 형성해야 하며, 중심점으로부터의 거리의 공분산 행렬 및 특징값을 사용하여 판단합니다. 이러한 경우를 일치했다고 간주합니다.
+     *       b. 현재 프레임 코너 포인트에서 직선까지의 거리 및 수직선의 단위 벡터를 계산하여 코너 포인트 매개변수로 저장합니다.
+     *    2) 현재 라이다 프레임의 평면 포인트가 로컬 맵 매칭 포인트를 찾습니다.
+     *       a. 현재 프레임 자세를 업데이트하고 현재 프레임 평면 포인트 좌표를 맵 좌표로 변환하여 로컬 맵에서 1m 이하의 거리에 있는 5개의 가장 가까운 포인트를 찾습니다. 또한, 이 5개의 포인트가 평면을 형성해야 하며, 최소자승법으로 평면을 적합시켜야 합니다. 이러한 경우를 일치했다고 간주합니다.
+     *       b. 현재 프레임 평면 포인트에서 평면까지의 거리 및 수직선의 단위 벡터를 계산하여 평면 포인트 매개변수로 저장합니다.
+     *    3) 로컬 맵과 일치하는 현재 프레임의 코너 및 평면 포인트를 추출하여 동일한 세트에 추가합니다.
+     *    4) 매칭된 특징 포인트에 대해 Jacobian 행렬을 계산하고, 관측값은 포인트에서 직선 또는 평면까지의 거리이며, 가우스 뉴턴 방정식을 구성하여 현재 자세를 반복적으로 최적화합니다. 최종 결과는 transformTobeMapped에 저장됩니다.
+     * 3. IMU의 원시 RPY 데이터와 "스캔 투 맵"으로 최적화된 후속 자세를 가중 평균하여 현재 프레임의 자세 롤 및 피치를 업데이트하고, Z 좌표를 제한합니다.
+    */
     void scan2MapOptimization()
     {
+        // 키프레임이 있을 경우에만 실행
         if (cloudKeyPoses3D->points.empty())
             return;
 
+        // 현재 레이저 프레임의 코너 및 평면 포인트 수가 충분한 경우
         if (laserCloudCornerLastDSNum > edgeFeatureMinValidNum && laserCloudSurfLastDSNum > surfFeatureMinValidNum)
         {
+            // kdtree 입력으로 로컬 맵 포인트 클라우드 설정
             kdtreeCornerFromMap->setInputCloud(laserCloudCornerFromMapDS);
             kdtreeSurfFromMap->setInputCloud(laserCloudSurfFromMapDS);
 
+            // 최대 30번 반복
             for (int iterCount = 0; iterCount < 30; iterCount++)
             {
+                // 각 반복마다 특징점 집합 지우기
                 laserCloudOri->clear();
                 coeffSel->clear();
 
+                // 현재 레이저 프레임 코너 포인트를 로컬 맵 매칭 포인트로 찾기
+                // 1. 현재 프레임 포즈 업데이트, 현재 프레임 코너 포인트 좌표를 맵 좌표로 변환하고, 로컬 맵에서 1m 이내의 거리에 있고 5개 포인트가 직선을 형성하는 경우 (포인트 중심으로부터의 거리 및 공분산 행렬 및 고유값 사용), 매칭된 것으로 판단
+                // 2. 현재 프레임 코너 포인트에서 직선까지의 거리 및 수직 선의 단위 벡터를 계산하고, 코너 포인트 매개 변수로 저장
                 cornerOptimization();
+
+                // 현재 레이저 프레임 평면 포인트를 로컬 맵 매칭 포인트로 찾기
+                // 1. 현재 프레임 포즈 업데이트, 현재 프레임 평면 포인트 좌표를 맵 좌표로 변환하고, 로컬 맵에서 1m 이내의 거리에 있고 5개 포인트가 평면을 형성하는 경우 (최소 자승 평면을 맞추는 최소자승법), 매칭된 것으로 판단
+                // 2. 현재 프레임 평면 포인트에서 평면까지의 거리 및 수직 선의 단위 벡터를 계산하고, 평면 포인트 매개 변수로 저장
                 surfOptimization();
 
+                // 현재 프레임에서 로컬 맵에 매칭된 코너 포인트 및 평면 포인트를 추출하여 동일한 집합에 추가
                 combineOptimizationCoeffs();
 
+                // 스캔 투 맵 최적화
+                // 매칭 특징점에 대한 Jacobian 행렬을 계산하고, 관측 값은 특징점에서 직선 및 평면까지의 거리로, 가우스 뉴턴 방정식을 구성하여 현재 포즈를 반복적으로 최적화하고 transformTobeMapped에 저장          
                 if (LMOptimization(iterCount) == true)
                     break;              
             }
 
+            // IMU의 원시 RPY 데이터와 스캔 투 맵으로 최적화된 후속 자세를 가중 평균하여 현재 프레임의 자세 롤 및 피치를 업데이트하고, Z 좌표를 제한
             transformUpdate();
         } else {
             RCLCPP_WARN(get_logger(), "Not enough features! Only %d edge and %d planar features available.", laserCloudCornerLastDSNum, laserCloudSurfLastDSNum);
         }
     }
 
+
+    /**
+     * IMU의 원시 RPY 데이터와 "scan-to-map"으로 최적화된 후속 자세를 가중 평균하여 현재 프레임의 자세 롤 및 피치를 업데이트하고, Z 좌표를 제한합니다.
+    */
     void transformUpdate()
     {
         if (cloudInfo.imu_available == true)
         {
+             // 피치 각도가 1.4보다 작을 때
             if (std::abs(cloudInfo.imu_pitch_init) < 1.4)
             {
                 double imuWeight = imuRPYWeight;
@@ -1441,12 +1681,14 @@ public:
                 double rollMid, pitchMid, yawMid;
 
                 // slerp roll
+                // 롤 각도의 가중 평균을 계산하고, "scan-to-map"으로 최적화된 자세 및 IMU 원시 RPY 데이터로 가중 평균을 수행합니다.
                 transformQuaternion.setRPY(transformTobeMapped[0], 0, 0);
                 imuQuaternion.setRPY(cloudInfo.imu_roll_init, 0, 0);
                 tf2::Matrix3x3(transformQuaternion.slerp(imuQuaternion, imuWeight)).getRPY(rollMid, pitchMid, yawMid);
                 transformTobeMapped[0] = rollMid;
 
                 // slerp pitch
+                // 피치 각도의 가중 평균을 계산하고, "scan-to-map"으로 최적화된 자세 및 IMU 원시 RPY 데이터로 가중 평균을 수행합니다.
                 transformQuaternion.setRPY(0, transformTobeMapped[1], 0);
                 imuQuaternion.setRPY(0, cloudInfo.imu_pitch_init, 0);
                 tf2::Matrix3x3(transformQuaternion.slerp(imuQuaternion, imuWeight)).getRPY(rollMid, pitchMid, yawMid);
@@ -1454,10 +1696,12 @@ public:
             }
         }
 
+        // 현재 프레임 자세의 롤, 피치, Z 좌표를 업데이트합니다. 자동차이므로 롤 및 피치는 상대적으로 안정적이며 크게 변하지 않습니다. 일부 경우에는 imu의 데이터를 신뢰할 수 있습니다. Z는 높이 제약이 있습니다.
         transformTobeMapped[0] = constraintTransformation(transformTobeMapped[0], rotation_tollerance);
         transformTobeMapped[1] = constraintTransformation(transformTobeMapped[1], rotation_tollerance);
         transformTobeMapped[5] = constraintTransformation(transformTobeMapped[5], z_tollerance);
 
+        // 현재 프레임 자세
         incrementalOdometryAffineBack = trans2Affine3f(transformTobeMapped);
     }
 
@@ -1471,6 +1715,10 @@ public:
         return value;
     }
 
+
+    /**
+     * 현재 프레임과 이전 프레임의 자세 변환을 계산하고, 변화가 너무 작으면 키프레임으로 설정하지 않고, 그렇지 않으면 키프레임으로 설정합니다.
+    */
     bool saveFrame()
     {
         if (cloudKeyPoses3D->points.empty())
@@ -1482,13 +1730,17 @@ public:
                 return true;
         }
 
+        // 이전 프레임 자세
         Eigen::Affine3f transStart = pclPointToAffine3f(cloudKeyPoses6D->back());
+        // 현재 프레임 자세
         Eigen::Affine3f transFinal = pcl::getTransformation(transformTobeMapped[3], transformTobeMapped[4], transformTobeMapped[5], 
                                                             transformTobeMapped[0], transformTobeMapped[1], transformTobeMapped[2]);
+        // 자세 변환 증가
         Eigen::Affine3f transBetween = transStart.inverse() * transFinal;
         float x, y, z, roll, pitch, yaw;
         pcl::getTranslationAndEulerAngles(transBetween, x, y, z, roll, pitch, yaw);
 
+        // 회전 및 이동이 모두 작으면 현재 프레임을 키프레임으로 설정하지 않음
         if (abs(roll)  < surroundingkeyframeAddingAngleThreshold &&
             abs(pitch) < surroundingkeyframeAddingAngleThreshold &&
             abs(yaw)   < surroundingkeyframeAddingAngleThreshold &&
@@ -1613,27 +1865,42 @@ public:
         aLoopIsClosed = true;
     }
 
+
+    /**
+     * 현재 프레임을 키프레임으로 설정하고, 레이스 팩터 그래프 최적화를 수행합니다.
+     * 1. 현재 프레임과 이전 프레임의 자세 변환을 계산하고, 변화가 너무 작으면 키프레임으로 설정하지 않고, 그렇지 않으면 키프레임으로 설정합니다.
+     * 2. 레이스 팩터 그래프에 레이더 오도메트리 팩터, GPS 팩터, 루프 팩터를 추가합니다.
+     * 3. 레이스 팩터 그래프 최적화를 실행합니다.
+     * 4. 현재 프레임의 최적화된 자세 및 자세 공분산을 얻습니다.
+     * 5. cloudKeyPoses3D 및 cloudKeyPoses6D를 추가하고, transformTobeMapped을 업데이트하며, 현재 키프레임의 코너 및 서피스 포인트 세트를 추가합니다.
+    */
     void saveKeyFramesAndFactor()
     {
+        // 1. 현재 프레임과 이전 프레임의 자세 변환을 계산하고, 변화가 너무 작으면 키프레임으로 설정하지 않고, 그렇지 않으면 키프레임으로 설정합니다.
         if (saveFrame() == false)
             return;
 
         // odom factor
+        // 라이다 오도미터(factor) 추가
         addOdomFactor();
 
         // gps factor
+        // GPS(factor) 추가
         addGPSFactor();
 
         // loop factor
+        // 루프 클로저(factor) 추가
         addLoopFactor();
 
         // cout << "****************************************************" << endl;
         // gtSAMgraph.print("GTSAM Graph:\n");
 
         // update iSAM
+        // 그래프 최적화 수행
         isam->update(gtSAMgraph, initialEstimate);
         isam->update();
 
+        // 루프가 닫혔을 경우 추가 업데이트를 수행하여 최적화
         if (aLoopIsClosed == true)
         {
             isam->update();
@@ -1643,25 +1910,32 @@ public:
             isam->update();
         }
 
+        // 업데이트 후에는 저장된 그래프를 초기화, 주의: 과거 데이터는 지워지지 않으며 ISAM에 저장됨
         gtSAMgraph.resize(0);
         initialEstimate.clear();
 
         //save key poses
+        // 4. 현재 프레임의 최적화된 자세 및 자세 공분산을 얻습니다.
         PointType thisPose3D;
         PointTypePose thisPose6D;
         Pose3 latestEstimate;
 
+        // ISAM을 사용하여 현재 프레임의 최적화 결과 계산
         isamCurrentEstimate = isam->calculateEstimate();
+        // 현재 프레임의 최적화된 자세 결과 얻기
         latestEstimate = isamCurrentEstimate.at<Pose3>(isamCurrentEstimate.size()-1);
         // cout << "****************************************************" << endl;
         // isamCurrentEstimate.print("Current estimate: ");
 
+        // cloudKeyPoses3D에 현재 프레임의 자세 추가
         thisPose3D.x = latestEstimate.translation().x();
         thisPose3D.y = latestEstimate.translation().y();
         thisPose3D.z = latestEstimate.translation().z();
+        // 인덱스 추가
         thisPose3D.intensity = cloudKeyPoses3D->size(); // this can be used as index
         cloudKeyPoses3D->push_back(thisPose3D);
 
+        // cloudKeyPoses6D에 현재 프레임의 자세 추가
         thisPose6D.x = thisPose3D.x;
         thisPose6D.y = thisPose3D.y;
         thisPose6D.z = thisPose3D.z;
@@ -1675,9 +1949,12 @@ public:
         // cout << "****************************************************" << endl;
         // cout << "Pose covariance:" << endl;
         // cout << isam->marginalCovariance(isamCurrentEstimate.size()-1) << endl << endl;
+        
+        // 프레임의 자세에 대한 공분산 계산 및 저장
         poseCovariance = isam->marginalCovariance(isamCurrentEstimate.size()-1);
 
         // save updated transform
+        // transformTobeMapped을 현재 프레임의 자세로 업데이트
         transformTobeMapped[0] = latestEstimate.rotation().roll();
         transformTobeMapped[1] = latestEstimate.rotation().pitch();
         transformTobeMapped[2] = latestEstimate.rotation().yaw();
@@ -1686,34 +1963,49 @@ public:
         transformTobeMapped[5] = latestEstimate.translation().z();
 
         // save all the received edge and surf points
+        // 현재 프레임의 코너 및 서피스 키포인트를 복사 및 다운샘플링하여 저장
         pcl::PointCloud<PointType>::Ptr thisCornerKeyFrame(new pcl::PointCloud<PointType>());
         pcl::PointCloud<PointType>::Ptr thisSurfKeyFrame(new pcl::PointCloud<PointType>());
         pcl::copyPointCloud(*laserCloudCornerLastDS,  *thisCornerKeyFrame);
         pcl::copyPointCloud(*laserCloudSurfLastDS,    *thisSurfKeyFrame);
 
         // save key frame cloud
+        // 특징점 다운샘플링된 데이터 저장
         cornerCloudKeyFrames.push_back(thisCornerKeyFrame);
         surfCloudKeyFrames.push_back(thisSurfKeyFrame);
 
         // save path for visualization
+        // ISAM 업데이트 후의 프레임 자세로 경로 업데이트
         updatePath(thisPose6D);
     }
 
+
+
+
+    /**
+     * 모든 변수 노드의 자세를 업데이트하여, 모든 과거 키프레임의 자세를 업데이트하고, 오도미터 경로를 업데이트합니다.
+     */
     void correctPoses()
     {
+        // 키프레임이 없으면 함수 종료
         if (cloudKeyPoses3D->points.empty())
             return;
 
+        // 루프가 닫혔을 경우
         if (aLoopIsClosed == true)
         {
             // clear map cache
+            // 로컬 맵을 지우고
             laserCloudMapContainer.clear();
             // clear path
+            // 오도미터 경로를 지우고
             globalPath.poses.clear();
             // update key poses
+            // 모든 변수 노드의 자세를 업데이트하여, 모든 과거 키프레임의 자세를 업데이트하고, 오도미터 경로를 업데이트합니다.
             int numPoses = isamCurrentEstimate.size();
             for (int i = 0; i < numPoses; ++i)
             {
+                // 과거 키프레임의 자세를 업데이트
                 cloudKeyPoses3D->points[i].x = isamCurrentEstimate.at<Pose3>(i).translation().x();
                 cloudKeyPoses3D->points[i].y = isamCurrentEstimate.at<Pose3>(i).translation().y();
                 cloudKeyPoses3D->points[i].z = isamCurrentEstimate.at<Pose3>(i).translation().z();
@@ -1725,9 +2017,11 @@ public:
                 cloudKeyPoses6D->points[i].pitch = isamCurrentEstimate.at<Pose3>(i).rotation().pitch();
                 cloudKeyPoses6D->points[i].yaw   = isamCurrentEstimate.at<Pose3>(i).rotation().yaw();
 
+                // 오도미터 경로 업데이트
                 updatePath(cloudKeyPoses6D->points[i]);
             }
 
+            // 루프 클로저 플래그 초기화
             aLoopIsClosed = false;
         }
     }
