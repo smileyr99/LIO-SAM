@@ -30,7 +30,7 @@ set(OpenCV_STATIC ON)
 find_package(OpenCV REQUIRED)
 find_package(PCL 1.10 REQUIRED)
 find_package(GTSAM REQUIRED)
-find_package(Eigen3 REQUIRED)
+find_package(Eigen REQUIRED)
 find_package(OpenMP REQUIRED)
 find_package(Boost REQUIRED COMPONENTS thread date_time timer chrono)
 
@@ -39,7 +39,7 @@ include_directories(
   ${PCL_INCLUDE_DIRS}
 	${GTSAM_INCLUDE_DIR}
   ${Boost_INCLUDE_DIRS}
-  ${EIGEN3_INCLUDE_DIRS}
+  ${EIGEN_INCLUDE_DIRS}
   ${tf2_eigen_INCLUDE_DIRS}
 )
 
