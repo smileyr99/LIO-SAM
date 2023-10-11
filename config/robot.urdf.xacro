@@ -10,8 +10,15 @@
     <child link="chassis_link" />
     <origin xyz="0 0 0" rpy="0 0 0" />
   </joint>
-
-  <link name="lidar_link"> </link>
+ <!--
+  <link name="os_lidar"> </link>
+  <joint name="lidar_joint" type="fixed">
+    <parent link="base_link" />
+    <child link="os_lidar" />
+    <origin xyz="0 0 0" rpy="0 0 0" />
+  </joint>
+-->
+ <link name="lidar_link"> </link>
   <joint name="lidar_joint" type="fixed">
     <parent link="base_link" />
     <child link="lidar_link" />
