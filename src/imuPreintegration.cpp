@@ -387,7 +387,13 @@ public:
         float r_y = odomMsg->pose.pose.orientation.y;
         float r_z = odomMsg->pose.pose.orientation.z;
         float r_w = odomMsg->pose.pose.orientation.w;
-        bool degenerate = (int)odomMsg->pose.covariance[0] == 1 ? true : false;
+        RCLCPP_INFO(this->get_logger(), "ncurrent lidar timestamp: %f\n",currentCorrectionTime);
+        //printf("current lidar pose x: %f\n", p_x);
+        //printf("current lidar pose y: %f\n", p_y);
+        //printf("current lidar pose z: %f\n", p_z);
+        
+        bool degenerate = (int)odomMsg->pose.covariance[0] == 1 ? true : false; 
+        //printf("lidar pose true?: %d\n", degenerate);
         gtsam::Pose3 lidarPose = gtsam::Pose3(gtsam::Rot3::Quaternion(r_w, r_x, r_y, r_z), gtsam::Point3(p_x, p_y, p_z));
 
 
@@ -419,9 +425,14 @@ public:
             graphFactors.add(priorVel);
             // initial bias
             prevBias_ = gtsam::imuBias::ConstantBias();
+
+            // code commnet 
+            //printf("prevBias_ Value: %f\n", prevBias_.accelerometer());
+            //printf("priorPose_ Value: %f  %f  %f\n", prevPose_.x(), prevPose_.y(), prevPose_.z() );
+
             gtsam::PriorFactor<gtsam::imuBias::ConstantBias> priorBias(B(0), prevBias_, priorBiasNoise);
             graphFactors.add(priorBias);
-            // add values
+            // add values 
             graphValues.insert(X(0), prevPose_);
             graphValues.insert(V(0), prevVel_);
             graphValues.insert(B(0), prevBias_);
@@ -478,15 +489,19 @@ public:
             key = 1;
         }
 
-
         // 1. integrate imu data and optimize
         // 이전 프레임과 현재 프레임 간의 IMU preintegration을 계산하고 이전 상태에 integration 값을 적용하여 현재 프레임의 초기 상태를 추정
+
+        RCLCPP_INFO(this->get_logger(),"imuQue Size: %d\n", (int)imuQueOpt.size());
+
         while (!imuQueOpt.empty())
         {
             // pop and integrate imu data that is between two optimizations
             // 현재 IMU 데이터와 타임 스탬프를 추출하고 preintegration을 수행
             sensor_msgs::msg::Imu *thisImu = &imuQueOpt.front();
             double imuTime = stamp2Sec(thisImu->header.stamp);
+
+            
             if (imuTime < currentCorrectionTime - delta_t)
             {   
                 // 두 프레임 간의 IMU 데이터 시간 간격을 계산
@@ -496,7 +511,13 @@ public:
                 imuIntegratorOpt_->integrateMeasurement(
                         gtsam::Vector3(thisImu->linear_acceleration.x, thisImu->linear_acceleration.y, thisImu->linear_acceleration.z),
                         gtsam::Vector3(thisImu->angular_velocity.x,    thisImu->angular_velocity.y,    thisImu->angular_velocity.z), dt);
-                
+
+                //imuIntegratorOpt_->integrateMeasurement(
+                //        gtsam::Vector3(0, 0, 0),
+                //        gtsam::Vector3(0, 0, 0), 0.001);
+
+                //printf("[%d] current imu: %f %f %f %f %f %f %f\n", cnt, thisImu->linear_acceleration.x, thisImu->linear_acceleration.y, thisImu->linear_acceleration.z, 
+                //thisImu->angular_velocity.x, thisImu->angular_velocity.y, thisImu->angular_velocity.z, dt);
                 lastImuT_opt = imuTime;
                 
                 // 처리한 IMU 데이터를 큐에서 제거
@@ -505,16 +526,26 @@ public:
             else
                 break;
         }
+
+
+
         // add imu factor to graph
         // IMU preintegration factor를 추가
         const gtsam::PreintegratedImuMeasurements& preint_imu = dynamic_cast<const gtsam::PreintegratedImuMeasurements&>(*imuIntegratorOpt_);
+        //printf("key2: %d\n", key);
 
         // IMU factor를 추가 (파라미터: 이전 포즈, 이전 속도, 현재 포즈, 현재 속도, 이전 bias, preintegration 값)
         gtsam::ImuFactor imu_factor(X(key - 1), V(key - 1), X(key), V(key), B(key - 1), preint_imu);
+        //gtsam::ImuFactor imu_factor(0, 0, X(key), V(key), B(key - 1), preint_imu);
+        // graphValues.at(X(key-1)).print();
+
+        //preint_imu.print();
+
         graphFactors.add(imu_factor);
 
+
         // add imu bias between factor
-        // IMU bias factor를 추가(파라미터: 이전 bias, 현재 bias, ? , 노이즈, detaTij()는 적분 세그먼트 시간 )
+        // IMU bias factor를 추가(파라미터: 이전 bias, 현재 bias, measurement, 노이즈, detaTij()는 적분 세그먼트 시간 )
         graphFactors.add(gtsam::BetweenFactor<gtsam::imuBias::ConstantBias>(B(key - 1), B(key), gtsam::imuBias::ConstantBias(),
                          gtsam::noiseModel::Diagonal::Sigmas(sqrt(imuIntegratorOpt_->deltaTij()) * noiseModelBetweenBias)));
         // add pose factor
@@ -540,10 +571,15 @@ public:
         gtsam::Values result = optimizer.calculateEstimate();
         prevPose_  = result.at<gtsam::Pose3>(X(key));
         prevVel_   = result.at<gtsam::Vector3>(V(key));
+      
 
         // 현재 프레임의 상태와 bias 업데이트
         prevState_ = gtsam::NavState(prevPose_, prevVel_);
         prevBias_  = result.at<gtsam::imuBias::ConstantBias>(B(key));
+
+        //printf("2. prevBias_ Value: %f\n", prevBias_.accelerometer());
+        //printf("2. priorPose_ Value: %f  %f  %f\n", prevPose_.x(), prevPose_.y(), prevPose_.z() );
+        //printf("2. prevVel_ Value: %f\n", prevState_.v());
         // Reset the optimization preintegration object.
         // 다음 프레임에서 preIntegration을 두 프레임 사이의 변화량으로 설정하기 위해 Preintegration을 재설정
         imuIntegratorOpt_->resetIntegrationAndSetBias(prevBias_);
@@ -586,6 +622,7 @@ public:
 
                 imuIntegratorImu_->integrateMeasurement(gtsam::Vector3(thisImu->linear_acceleration.x, thisImu->linear_acceleration.y, thisImu->linear_acceleration.z),
                                                         gtsam::Vector3(thisImu->angular_velocity.x,    thisImu->angular_velocity.y,    thisImu->angular_velocity.z), dt);
+                
                 lastImuQT = imuTime;
             }
         }
@@ -647,6 +684,14 @@ public:
         // IMU preintegration에 현재 IMU 데이터를 추가 (주의: 이 IMU preintegraion의 시작 시간은 이전 라이다 오도메트리 프레임의 타임스탬프 입니다.)
         imuIntegratorImu_->integrateMeasurement(gtsam::Vector3(thisImu.linear_acceleration.x, thisImu.linear_acceleration.y, thisImu.linear_acceleration.z),
                                                 gtsam::Vector3(thisImu.angular_velocity.x,    thisImu.angular_velocity.y,    thisImu.angular_velocity.z), dt);
+
+        // printf("this linear_acceleration.x: %f\n", thisImu.linear_acceleration.x);
+        // printf("this linear_acceleration.y: %f\n", thisImu.linear_acceleration.y);
+        // printf("this linear_acceleration.z: %f\n", thisImu.linear_acceleration.z);
+        // printf("this angular_velocity.x: %f\n", thisImu.angular_velocity.x);
+        // printf("this angular_velocity.y: %f\n", thisImu.angular_velocity.y);
+        // printf("this angular_velocity.z: %f\n\n", thisImu.angular_velocity.z);
+
 
         // predict odometry
         // 이전 라이다 오도메트리 프레임의 상태와 바이어스를 사용하여 이 시점부터 현재 시점까지의 IMU preintegraion을 적용하여 현재 시점의 상태를 얻음

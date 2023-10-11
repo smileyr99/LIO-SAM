@@ -1867,10 +1867,10 @@ public:
 
 
     /**
-     * 현재 프레임을 키프레임으로 설정하고, 레이스 팩터 그래프 최적화를 수행합니다.
+     * 현재 프레임을 키프레임으로 설정하고,  팩터 그래프 최적화를 수행합니다.
      * 1. 현재 프레임과 이전 프레임의 자세 변환을 계산하고, 변화가 너무 작으면 키프레임으로 설정하지 않고, 그렇지 않으면 키프레임으로 설정합니다.
-     * 2. 레이스 팩터 그래프에 레이더 오도메트리 팩터, GPS 팩터, 루프 팩터를 추가합니다.
-     * 3. 레이스 팩터 그래프 최적화를 실행합니다.
+     * 2. 팩터 그래프에 레이더 오도메트리 팩터, GPS 팩터, 루프 팩터를 추가합니다.
+     * 3. 팩터 그래프 최적화를 실행합니다.
      * 4. 현재 프레임의 최적화된 자세 및 자세 공분산을 얻습니다.
      * 5. cloudKeyPoses3D 및 cloudKeyPoses6D를 추가하고, transformTobeMapped을 업데이트하며, 현재 키프레임의 코너 및 서피스 포인트 세트를 추가합니다.
     */
@@ -2054,6 +2054,13 @@ public:
         laserOdometryROS.pose.pose.position.x = transformTobeMapped[3];
         laserOdometryROS.pose.pose.position.y = transformTobeMapped[4];
         laserOdometryROS.pose.pose.position.z = transformTobeMapped[5];
+        // todolist
+        //printf("laserodom pose.x: %f\n", transformTobeMapped[3]);
+        //printf("laserodom pose.y: %f\n", transformTobeMapped[4]);
+        //printf("laserodom pose.z: %f\n\n", transformTobeMapped[5]);
+        //printf("\n\n");
+
+
         tf2::Quaternion quat_tf;
         quat_tf.setRPY(transformTobeMapped[0], transformTobeMapped[1], transformTobeMapped[2]);
         geometry_msgs::msg::Quaternion quat_msg;
