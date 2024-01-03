@@ -33,6 +33,7 @@ find_package(GTSAM REQUIRED)
 find_package(Eigen REQUIRED)
 find_package(OpenMP REQUIRED)
 find_package(Boost REQUIRED COMPONENTS thread date_time timer chrono)
+find_package(Boost REQUIRED COMPONENTS serialization)
 
 include_directories(
   include/lio_sam

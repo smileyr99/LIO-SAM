@@ -560,6 +560,7 @@ public:
         pcl::PointCloud<PointType>::Ptr globalSurfCloud(new pcl::PointCloud<PointType>());
         pcl::PointCloud<PointType>::Ptr globalSurfCloudDS(new pcl::PointCloud<PointType>());
         pcl::PointCloud<PointType>::Ptr globalMapCloud(new pcl::PointCloud<PointType>());
+
         for (int i = 0; i < (int)cloudKeyPoses3D->size(); i++) {
             *globalCornerCloud += *transformPointCloud(cornerCloudKeyFrames[i],  &cloudKeyPoses6D->points[i]);
             *globalSurfCloud   += *transformPointCloud(surfCloudKeyFrames[i],    &cloudKeyPoses6D->points[i]);
@@ -644,7 +645,7 @@ public:
      * 1. 루프 클로저 검출 scan-to-map, ICP를 사용하여 자세 최적화
      *   1) 과거 키프레임 중 현재 키프레임과 가장 가까운 키프레임 집합을 찾고, 일정 시간이 지난 키프레임 중 하나를 선택하여 후보로 선정
      *   2) 현재 키프레임 특징점 집합을 추출하고 다운샘플링; 루프 클로저 매칭 키프레임 앞뒤의 일부 키프레임 특징점 집합을 추출하고 다운샘플링
-     *   3) scan-to-map 최적화 실행, ICP 메소드 호출, 최적화된 자세 획득, 闭环 인자에 필요한 데이터를 생성하여 그래프 최적화에서 자세를 업데이트
+     *   3) scan-to-map 최적화 실행, ICP 메소드 호출, 최적화된 자세 획득, 루프 인자에 필요한 데이터를 생성하여 그래프 최적화에서 자세를 업데이트
      * 2. rviz에 루프 클로저 경계 표시
     */
     void loopClosureThread()
@@ -660,8 +661,8 @@ public:
 
             // 루프 클로저 검출, scan-to-map 자세 최적화
             // 1. 현재 키프레임과 가장 가까운 키프레임 집합을 찾아 일정 시간이 지난 키프레임 중 하나를 선택하여 후보로 선정
-            // 2. 현재 키프레임 특징점 집합을 추출하고 다운샘플링; 闭环 매칭 키프레임 앞뒤의 일부 키프레임 특징점 집합을 추출하고 다운샘플링
-            // 3. scan-to-map 최적화 실행, ICP 메소드 호출, 최적화된 자세 획득, 闭环 인자에 필요한 데이터를 생성하여 그래프 최적화에서 자세를 업데이트
+            // 2. 현재 키프레임 특징점 집합을 추출하고 다운샘플링; 루프 매칭 키프레임 앞뒤의 일부 키프레임 특징점 집합을 추출하고 다운샘플링
+            // 3. scan-to-map 최적화 실행, ICP 메소드 호출, 최적화된 자세 획득, 루프 인자에 필요한 데이터를 생성하여 그래프 최적화에서 자세를 업데이트
             // 주의: 루프 클로저 시 현재 프레임 자세를 즉시 업데이트하지 않고, 루프 클로저 인자를 추가하여 그래프 최적화가 자세를 업데이트하도록 함
             performLoopClosure();
             
@@ -919,7 +920,7 @@ public:
             return;
 
         visualization_msgs::msg::MarkerArray markerArray;
-        // loop nodes
+        // loop nodes --- 파랑색으로 표시
         visualization_msgs::msg::Marker markerNode;
         markerNode.header.frame_id = odometryFrame;
         markerNode.header.stamp = timeLaserInfoStamp;
@@ -931,7 +932,7 @@ public:
         markerNode.scale.x = 0.3; markerNode.scale.y = 0.3; markerNode.scale.z = 0.3; 
         markerNode.color.r = 0; markerNode.color.g = 0.8; markerNode.color.b = 1;
         markerNode.color.a = 1;
-        // loop edges
+        // loop edges --- 노란색으로 표시
         visualization_msgs::msg::Marker markerEdge;
         markerEdge.header.frame_id = odometryFrame;
         markerEdge.header.stamp = timeLaserInfoStamp;
@@ -1175,6 +1176,10 @@ public:
         downSizeFilterSurf.setInputCloud(laserCloudSurfFromMap);
         downSizeFilterSurf.filter(*laserCloudSurfFromMapDS);
         laserCloudSurfFromMapDSNum = laserCloudSurfFromMapDS->size();
+
+        int count = (laserCloudCornerFromMapDSNum + laserCloudSurfFromMapDSNum);
+
+        RCLCPP_INFO(rclcpp::get_logger("rclcpp"), "localmap_count: %d", count);
 
         // clear map cache if too large
         // 메모리가 너무 크면 지웁니다.

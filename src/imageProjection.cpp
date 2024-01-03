@@ -1,5 +1,6 @@
 #include "utility.hpp"
 #include "lio_sam/msg/cloud_info.hpp"
+#include "pcl/filters/impl/filter.hpp"
 
 
 
@@ -368,6 +369,10 @@ public:
         // 9. 현재 프레임의 끝 타임스탬프를 계산 (주의: 시간 기록은 첫번째 포인트와의 상대적인 시간 차이를 나타냅니다. 첫 번째 포인트의 시간은 0입니다.)
         timeScanEnd = timeScanCur + laserCloudIn->points.back().time;
 
+        // remove Nan
+        vector<int> indices;
+        pcl::removeNaNFromPointCloud(*laserCloudIn, *laserCloudIn, indices);
+
         // check dense flag
         // 10. LiDAR 클라우드가 밀도 형식이 아닌 경우 오류 메시지를 출력하고 ROS종료
         if (laserCloudIn->is_dense == false)
@@ -722,6 +727,10 @@ public:
     void projectPointCloud()
     {
         int cloudSize = laserCloudIn->points.size();
+
+        RCLCPP_INFO(get_logger(), "cloudSize %d\n", cloudSize);
+
+        int cnt = 0;
         // range image projection
         // 현재 프레임의 라이다 포인트 클라우드를 반복 처리
         for (int i = 0; i < cloudSize; ++i)
@@ -779,7 +788,11 @@ public:
             // 1차원 인덱스로 변환하고 보정된 포인트 저장
             int index = columnIdn + rowIdn * Horizon_SCAN;
             fullCloud->points[index] = thisPoint;
+
+            cnt++;
         }
+        RCLCPP_INFO(get_logger(), "cnt %d\n", cnt);
+        
     }
 
 
